@@ -18,3 +18,34 @@ def test_paint_erase_resize_preserves_top_left():
     grid.resize(3, 3)
     assert grid.color_ids == [0, EMPTY_COLOR_ID, -1, 2, 3, -1, -1, -1, -1]
 
+
+def test_trim_empty_borders_keeps_empty_rows_and_columns_inside_content():
+    empty = EMPTY_COLOR_ID
+    grid = PixelGridData(
+        6,
+        6,
+        [
+            empty, empty, empty, empty, empty, empty,
+            empty, empty, empty, empty, empty, empty,
+            empty, 1, empty, empty, 2, empty,
+            empty, empty, empty, empty, empty, empty,
+            empty, empty, 3, empty, empty, empty,
+            empty, empty, empty, empty, empty, empty,
+        ],
+    )
+
+    assert grid.trim_empty_borders()
+    assert (grid.width, grid.height) == (4, 3)
+    assert grid.color_ids == [
+        1, empty, empty, 2,
+        empty, empty, empty, empty,
+        empty, 3, empty, empty,
+    ]
+
+
+def test_trim_empty_borders_leaves_fully_empty_grid_unchanged():
+    grid = PixelGridData(3, 2)
+
+    assert not grid.trim_empty_borders()
+    assert (grid.width, grid.height) == (3, 2)
+    assert grid.color_ids == [EMPTY_COLOR_ID] * 6

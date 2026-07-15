@@ -44,8 +44,6 @@ class LevelValidator:
             error("level must be greater than 0.")
         if level.game_mode != 1:
             error("gameMode must be 1 for Pixel mode.")
-        if level.level_grid_version != 1:
-            error("levelGridVersion must be 1.")
         if level.grid_rows <= 0 or level.grid_cols <= 0:
             error("Box grid dimensions must be greater than 0.")
         if not level.grid_cells:

@@ -90,6 +90,37 @@ class PixelGridData:
     def clear(self) -> None:
         self.fill(EMPTY_COLOR_ID)
 
+    def trim_empty_borders(self) -> bool:
+        """Remove consecutive empty rows and columns around painted content."""
+        if self.width <= 0 or self.height <= 0:
+            return False
+
+        painted_indices = [
+            index for index, color_id in enumerate(self.color_ids) if color_id != EMPTY_COLOR_ID
+        ]
+        if not painted_indices:
+            return False
+
+        painted_rows = [index // self.width for index in painted_indices]
+        painted_columns = [index % self.width for index in painted_indices]
+        top, bottom = min(painted_rows), max(painted_rows)
+        left, right = min(painted_columns), max(painted_columns)
+        new_width = right - left + 1
+        new_height = bottom - top + 1
+        if new_width == self.width and new_height == self.height:
+            return False
+
+        old_width = self.width
+        old_color_ids = self.color_ids
+        self.width = new_width
+        self.height = new_height
+        self.color_ids = [
+            old_color_ids[row * old_width + column]
+            for row in range(top, bottom + 1)
+            for column in range(left, right + 1)
+        ]
+        return True
+
     def histogram(self) -> Counter[int]:
         return Counter(color_id for color_id in self.color_ids if color_id != EMPTY_COLOR_ID)
 

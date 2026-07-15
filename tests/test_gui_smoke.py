@@ -16,6 +16,7 @@ def test_main_window_smoke(qtbot):
     assert window.open_action is not None
     assert window.save_action is not None
     assert window.import_legacy_button is not None
+    assert window.trim_empty_button is not None
     assert window.box_editor is not None
     assert window.pixel_editor is not None
     assert not hasattr(window, "level_grid_version_spin")
@@ -79,6 +80,40 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     assert window.level.pixel_grid.color_ids == [0, 1, EMPTY_COLOR_ID, 2, 3, EMPTY_COLOR_ID]
     assert window.pixel_editor.scene.sceneRect().width() == 72
     assert window.pixel_editor.scene.sceneRect().height() == 48
+    window._set_dirty(False)
+    window.close()
+
+
+def test_trim_empty_pixel_border_updates_scene_and_supports_undo(qtbot):
+    empty = EMPTY_COLOR_ID
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level.pixel_grid = PixelGridData(
+        4,
+        4,
+        [
+            empty, empty, empty, empty,
+            empty, 1, empty, empty,
+            empty, empty, 2, empty,
+            empty, empty, empty, empty,
+        ],
+    )
+    window._refresh_all()
+
+    window.trim_empty_button.click()
+
+    assert (window.level.pixel_grid.width, window.level.pixel_grid.height) == (2, 2)
+    assert window.level.pixel_grid.color_ids == [1, empty, empty, 2]
+    assert window.pixel_editor.scene.sceneRect().width() == 48
+    assert window.pixel_editor.scene.sceneRect().height() == 48
+    assert window.dirty
+
+    window.commands.undo()
+
+    assert (window.level.pixel_grid.width, window.level.pixel_grid.height) == (4, 4)
+    assert window.level.pixel_grid.color_ids[5] == 1
+    assert window.level.pixel_grid.color_ids[10] == 2
+    window._set_dirty(False)
     window.close()
 
 
@@ -103,6 +138,7 @@ def test_import_legacy_pixel_grid_replaces_only_pixel_grid(qtbot, monkeypatch, t
     assert window.level.pixel_grid.color_ids == [EMPTY_COLOR_ID, 2]
     assert window.level.grid_cells == original_cells
     assert window.dirty
+    window._set_dirty(False)
     window.close()
 
 
@@ -119,6 +155,7 @@ def test_visible_metadata_fields_are_user_editable(qtbot):
     assert window.level.map_type == 9
     assert window.level.board == 4
     assert window.level.difficulty == 2
+    window._set_dirty(False)
     window.close()
 
 

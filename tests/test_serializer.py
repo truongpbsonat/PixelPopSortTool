@@ -1,10 +1,8 @@
 import json
 
-import pytest
-
 from pixel_level_tool.domain.enums import CellShape, Direction, ItemColor
 from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
-from pixel_level_tool.services.level_serializer import CELL_TYPE_NAME, UnsupportedScopeError, dumps_level, level_from_dict
+from pixel_level_tool.services.level_serializer import CELL_TYPE_NAME, dumps_level, level_from_dict
 
 
 def make_level():
@@ -97,9 +95,12 @@ def test_load_preserves_supported_root_metadata():
     assert written["category"] == 11
 
 
-def test_load_rejects_unsupported_grid_version():
+def test_load_and_save_preserve_any_grid_version():
     data = json.loads(dumps_level(make_level()))
-    data["levelGridVersion"] = 0
+    data["levelGridVersion"] = 3
 
-    with pytest.raises(UnsupportedScopeError):
-        level_from_dict(data)
+    loaded = level_from_dict(data)
+    written = json.loads(dumps_level(loaded))
+
+    assert loaded.level_grid_version == 3
+    assert written["levelGridVersion"] == 3

@@ -68,7 +68,7 @@ def level_to_dict(level: PixelLevelData, *, assign_ids: bool = True) -> dict[str
                 "modifiers": [],
                 "obstacles": [],
             },
-            "levelGridVersion": 1,
+            "levelGridVersion": snapshot.level_grid_version,
             "levelName": snapshot.level_name,
             "mapType": snapshot.map_type,
             "gridRows": snapshot.grid_rows,
@@ -113,9 +113,10 @@ def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
 
 
 def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
-    level_grid_version = int(data.get("levelGridVersion", 1))
-    if level_grid_version != 1:
-        raise UnsupportedScopeError("Only levelGridVersion 1 sparse grid data is supported by this tool.")
+    try:
+        level_grid_version = int(data.get("levelGridVersion", 1))
+    except (TypeError, ValueError) as exc:
+        raise LevelSerializationError("levelGridVersion must be an integer.") from exc
     pixel_grid_data = data.get("pixelGrid")
     if isinstance(pixel_grid_data, dict):
         if pixel_grid_data.get("modifiers") not in (None, []):
@@ -132,7 +133,7 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
     else:
         pixel_grid = PixelGridData()
     level = PixelLevelData(
-        level_grid_version=1,
+        level_grid_version=level_grid_version,
         level_name=data.get("levelName"),
         map_type=int(data.get("mapType", 0)),
         grid_rows=int(data.get("gridRows", 10)),

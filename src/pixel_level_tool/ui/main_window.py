@@ -148,11 +148,14 @@ class MainWindow(QMainWindow):
         pixel_controls = QVBoxLayout()
         pixel_buttons_top = QHBoxLayout()
         pixel_buttons_bottom = QHBoxLayout()
+        pixel_buttons_size = QHBoxLayout()
         self.erase_button = QPushButton("Eraser")
         self.paint_button = QPushButton("Paint")
         self.eyedropper_button = QPushButton("Eyedropper")
         self.fill_button = QPushButton("Fill All")
         self.clear_button = QPushButton("Clear All")
+        self.trim_empty_button = QPushButton("Trim Empty Border")
+        self.trim_empty_button.setToolTip("Remove empty rows and columns only from the outside edges")
         self.import_button = QPushButton("Import Image")
         self.import_legacy_button = QPushButton("Import Old JSON")
         self.resize_pixel_button = QPushButton("Resize Pixel Grid")
@@ -199,15 +202,20 @@ class MainWindow(QMainWindow):
         for button in (
             self.fill_button,
             self.clear_button,
+            self.trim_empty_button,
             self.import_button,
             self.import_legacy_button,
+        ):
+            pixel_buttons_bottom.addWidget(button)
+        for button in (
             self.resize_pixel_button,
             self.pixel_zoom_in_button,
             self.pixel_zoom_out_button,
         ):
-            pixel_buttons_bottom.addWidget(button)
+            pixel_buttons_size.addWidget(button)
         pixel_controls.addLayout(pixel_buttons_top)
         pixel_controls.addLayout(pixel_buttons_bottom)
+        pixel_controls.addLayout(pixel_buttons_size)
         right_layout.addLayout(pixel_controls)
         right_layout.addWidget(self.pixel_editor, 1)
 
@@ -267,6 +275,7 @@ class MainWindow(QMainWindow):
         self.flood_button.clicked.connect(lambda: self._set_pixel_mode("flood"))
         self.fill_button.clicked.connect(lambda: self.pixel_editor.fill_all(int(self.color_palette.selected_color)))
         self.clear_button.clicked.connect(lambda: self.pixel_editor.fill_all(EMPTY_COLOR_ID))
+        self.trim_empty_button.clicked.connect(self.trim_empty_pixel_border)
         self.grid_lines_button.toggled.connect(self._toggle_pixel_grid_lines)
         self.pixel_zoom_in_button.clicked.connect(self.pixel_editor.zoom_in)
         self.pixel_zoom_out_button.clicked.connect(self.pixel_editor.zoom_out)
@@ -485,6 +494,27 @@ class MainWindow(QMainWindow):
 
         self._wrap_change("Resize pixel grid", mutate)
         self.statusBar().showMessage(f"Resized pixel grid to {width}x{height}", 5000)
+
+    def trim_empty_pixel_border(self) -> None:
+        grid = self.level.pixel_grid
+        old_width, old_height = grid.width, grid.height
+        before = self.level.clone()
+        if not grid.trim_empty_borders():
+            message = (
+                "Pixel grid has no empty outer rows or columns"
+                if any(color_id != EMPTY_COLOR_ID for color_id in grid.color_ids)
+                else "Pixel grid is empty; size was not changed"
+            )
+            self.statusBar().showMessage(message, 5000)
+            return
+
+        self.commands.push("Trim empty pixel border", before, self.level)
+        self._set_dirty(True)
+        self._refresh_all()
+        self.statusBar().showMessage(
+            f"Trimmed pixel grid from {old_width}x{old_height} to {grid.width}x{grid.height}",
+            5000,
+        )
 
     def import_image(self) -> None:
         grid = self.level.pixel_grid

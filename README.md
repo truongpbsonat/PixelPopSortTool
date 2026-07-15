@@ -12,7 +12,7 @@ It intentionally does not edit Classic mode, cargo lanes, obstacles, cell effect
 The main window has a resizable splitter:
 
 - Left: Box Ball Grid, shape/direction/active controls, source box canvas.
-- Right: Pixel Grid, paint/erase/eyedropper/fill/import controls, pixel canvas.
+- Right: Pixel Grid, paint/erase/eyedropper/fill/import/trim-border controls, pixel canvas.
 - Side panel: shared color palette, live color balance, validation messages.
 
 ## Setup
@@ -88,6 +88,7 @@ The serializer always writes:
 - `effects: null`
 
 IDs are reassigned deterministically on save, sorted by `gridY`, then `gridX`, starting at `300`.
+The tool accepts any integer `levelGridVersion` and preserves the loaded value when saving.
 
 ## ItemColor IDs
 
