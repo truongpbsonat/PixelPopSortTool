@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import QGridLayout, QPushButton, QWidget
 
-from pixel_level_tool.domain.enums import COLOR_RGB, ItemColor
+from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, ItemColor
 from pixel_level_tool.domain.level_models import PixelLevelData
 
 
@@ -21,12 +21,13 @@ class ColorPalette(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setHorizontalSpacing(6)
         layout.setVerticalSpacing(6)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         for index, color in enumerate(ItemColor):
             button = QPushButton()
             button.setCheckable(True)
             button.setFixedSize(QSize(self.SWATCH_SIZE, self.SWATCH_SIZE))
-            button.setToolTip(f"{int(color):2d}  {color.name}")
+            button.setToolTip(f"{int(color):2d}  {COLOR_NAMES[color]}")
             button.clicked.connect(lambda checked=False, picked=color: self.set_selected_color(picked, emit=True))
             self._buttons[color] = button
             layout.addWidget(button, index // self.COLUMN_COUNT, index % self.COLUMN_COUNT)
@@ -68,7 +69,7 @@ class ColorPalette(QWidget):
             delta = target.get(int(color), 0) - source.get(int(color), 0)
             self._balance_text[color] = f"{delta:+d}" if delta else ""
             self._buttons[color].setToolTip(
-                f"{int(color):2d}  {color.name}\n"
+                f"{int(color):2d}  {COLOR_NAMES[color]}\n"
                 f"Box: {source.get(int(color), 0)}  Pixel: {target.get(int(color), 0)}"
             )
         self.set_selected_color(self._selected)

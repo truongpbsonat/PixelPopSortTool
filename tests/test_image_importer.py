@@ -16,7 +16,7 @@ def test_image_import_alpha_nearest_and_no_y_flip(tmp_path):
     path = tmp_path / "sample.png"
     image.save(path)
     ids = import_image_to_color_ids(path, 2, 2, alpha_threshold=1)
-    assert ids[0] == int(ItemColor.Red)
+    assert ids[0] == int(ItemColor.BrickRed)
     assert ids[1] == int(ItemColor.Green)
     assert ids[2] == EMPTY_COLOR_ID
     assert ids[3] == int(ItemColor.White)

@@ -235,7 +235,7 @@ def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
             raise UnsupportedScopeError("Tunnel storedCells currently support normal CellData only.")
         return TunnelCellData(
             **common,
-            color=_require_int_enum(ItemColor, data.get("color", int(ItemColor.Blue)), "color"),
+            color=_require_int_enum(ItemColor, data.get("color", int(ItemColor.DarkBlue)), "color"),
             stored_cells=stored_cells,
         )
     if type_name != CELL_TYPE_NAME:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
@@ -45,6 +46,8 @@ from pixel_level_tool.ui.widgets.validation_panel import ValidationPanel
 
 
 class MainWindow(QMainWindow):
+    _LEVEL_FILE_PATTERN = re.compile(r"^(?P<level>\d+)(?:\.(?P<category>\d+))?\.json$", re.IGNORECASE)
+
     def __init__(self) -> None:
         super().__init__()
         self.settings = SettingsService()
@@ -52,6 +55,8 @@ class MainWindow(QMainWindow):
         self.validator = LevelValidator()
         self.level = PixelLevelData()
         self.path: Path | None = None
+        self.level_folder: Path | None = None
+        self.auto_level_save = False
         self.dirty = False
         self.commands = CommandStack(self._apply_snapshot)
         self.setAcceptDrops(True)
@@ -65,7 +70,9 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)
         self.new_action = QAction("New", self)
-        self.open_action = QAction("Open", self)
+        self.open_action = QAction("Open Folder", self)
+        self.prev_level_action = QAction("Prev", self)
+        self.next_level_action = QAction("Next", self)
         self.save_action = QAction("Save", self)
         self.save_as_action = QAction("Save As", self)
         self.validate_action = QAction("Validate", self)
@@ -74,6 +81,8 @@ class MainWindow(QMainWindow):
         for action in (
             self.new_action,
             self.open_action,
+            self.prev_level_action,
+            self.next_level_action,
             self.save_action,
             self.save_as_action,
             self.validate_action,
@@ -83,10 +92,25 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
         self.new_action.setShortcut(QKeySequence.New)
         self.open_action.setShortcut(QKeySequence.Open)
+        self.prev_level_action.setShortcut("Alt+Left")
+        self.next_level_action.setShortcut("Alt+Right")
         self.save_action.setShortcut(QKeySequence.Save)
         self.save_as_action.setShortcut(QKeySequence.SaveAs)
         self.undo_action.setShortcut(QKeySequence.Undo)
         self.redo_action.setShortcut(QKeySequence.Redo)
+        action_tooltips = (
+            (self.new_action, "Create a new level"),
+            (self.open_action, "Open a level folder"),
+            (self.prev_level_action, "Open the previous level"),
+            (self.next_level_action, "Open the next level"),
+            (self.save_action, "Save the current level"),
+            (self.save_as_action, "Save the current level as a new file"),
+            (self.undo_action, "Undo the last edit"),
+            (self.redo_action, "Redo the last undone edit"),
+        )
+        for action, description in action_tooltips:
+            action.setToolTip(f"{description} ({action.shortcut().toString()})")
+        self.validate_action.setToolTip("Validate the current level")
 
         meta = QWidget()
         meta_layout = QGridLayout(meta)
@@ -165,6 +189,8 @@ class MainWindow(QMainWindow):
         self.import_button = QPushButton("Import Image")
         self.import_legacy_button = QPushButton("Import Old JSON")
         self.resize_pixel_button = QPushButton("Resize Pixel Grid")
+        self.rotate_pixel_button = QPushButton("Rotate 90° CW")
+        self.rotate_pixel_button.setToolTip("Rotate the entire pixel grid 90 degrees clockwise")
         self.flood_button = QPushButton("Flood")
         self.pixel_tool_buttons = {
             "paint": self.paint_button,
@@ -216,6 +242,7 @@ class MainWindow(QMainWindow):
             pixel_buttons_bottom.addWidget(button)
         for button in (
             self.resize_pixel_button,
+            self.rotate_pixel_button,
             self.pixel_zoom_in_button,
             self.pixel_zoom_out_button,
         ):
@@ -256,6 +283,8 @@ class MainWindow(QMainWindow):
     def _connect(self) -> None:
         self.new_action.triggered.connect(self.new_level)
         self.open_action.triggered.connect(self.open_level)
+        self.prev_level_action.triggered.connect(self.open_previous_level)
+        self.next_level_action.triggered.connect(self.open_next_level)
         self.save_action.triggered.connect(self.save)
         self.save_as_action.triggered.connect(self.save_as)
         self.validate_action.triggered.connect(self.validate)
@@ -293,6 +322,7 @@ class MainWindow(QMainWindow):
         self.import_button.clicked.connect(self.import_image)
         self.import_legacy_button.clicked.connect(self.import_legacy_pixel_grid)
         self.resize_pixel_button.clicked.connect(self.resize_pixel_grid)
+        self.rotate_pixel_button.clicked.connect(self.rotate_pixel_grid_clockwise)
 
     def _set_pixel_mode(self, mode: str) -> None:
         self.pixel_editor.mode = mode
@@ -329,6 +359,7 @@ class MainWindow(QMainWindow):
 
     def _metadata_changed(self) -> None:
         changed = False
+        previous_level = self.level.level
         metadata_values = (
             ("level", self.level_spin.value()),
             ("level_name", self.name_edit.text()),
@@ -343,11 +374,16 @@ class MainWindow(QMainWindow):
                 changed = True
         if changed:
             self._set_dirty(True)
+            if self.level.level != previous_level:
+                self._refresh_level_navigation()
 
     def _set_dirty(self, dirty: bool) -> None:
         self.dirty = dirty
         star = "*" if dirty else ""
-        name = self.path.name if self.path else "Untitled"
+        if self.auto_level_save and self.level_folder is not None:
+            name = self._default_file_name()
+        else:
+            name = self.path.name if self.path else "Untitled"
         self.setWindowTitle(f"{star}{name} - MarbleSort Pixel Level Tool")
 
     def _refresh_all(self) -> None:
@@ -386,6 +422,7 @@ class MainWindow(QMainWindow):
         self.pixel_editor.set_color(self.color_palette.selected_color)
         self.validate()
         self._set_dirty(self.dirty)
+        self._refresh_level_navigation()
 
     def _confirm_discard(self) -> bool:
         if not self.dirty:
@@ -418,29 +455,121 @@ class MainWindow(QMainWindow):
             pixel_grid=PixelGridData(dialog.pixel_width.value(), dialog.pixel_height.value()),
         )
         self.path = None
+        # Keep an explicitly selected folder so a new level can be saved there
+        # immediately without opening a file picker again.
+        self.auto_level_save = self.level_folder is not None
         self.commands.clear()
         self._set_dirty(False)
         self._refresh_all()
 
     def open_level(self) -> None:
-        if not self._confirm_discard():
+        start_dir = self.settings.get(
+            "last_level_folder",
+            self.settings.get("last_open_dir", ""),
+        )
+        folder = QFileDialog.getExistingDirectory(self, "Select Pixel level folder", start_dir)
+        if not folder:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Open Pixel level", self.settings.get("last_open_dir", ""), "JSON (*.json)")
-        if path:
-            self._load_path(Path(path))
 
-    def _load_path(self, path: Path) -> None:
+        selected_folder = Path(folder)
+        files = self._level_files(selected_folder)
+        target = self._matching_level_path(files) or (files[0] if files else None)
+        if target is not None and not self._confirm_discard():
+            return
+
+        if target is not None:
+            self._load_path(target, from_level_folder=True)
+        else:
+            self.level_folder = selected_folder
+            self.auto_level_save = True
+            self.path = None
+            self.settings.set("last_level_folder", str(selected_folder))
+            self.settings.set("last_open_dir", str(selected_folder))
+            self._set_dirty(self.dirty)
+            self._refresh_level_navigation()
+            self.statusBar().showMessage(
+                f"Selected empty level folder: {selected_folder}. Save will create {self._default_file_name()}.",
+                7000,
+            )
+
+    def _load_path(self, path: Path, *, from_level_folder: bool = False) -> bool:
         try:
             self.level = load_level(path)
-        except LevelSerializationError as exc:
+        except (LevelSerializationError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "Open failed", str(exc))
-            return
+            return False
         self.path = path
+        self.level_folder = path.parent
+        self.auto_level_save = from_level_folder
         self.settings.set("last_open_dir", str(path.parent))
+        if from_level_folder:
+            self.settings.set("last_level_folder", str(path.parent))
         self.recent_files.add(path)
         self.commands.clear()
         self._set_dirty(False)
         self._refresh_all()
+        self.statusBar().showMessage(f"Opened level {self.level.level}: {path.name}", 5000)
+        return True
+
+    @classmethod
+    def _level_file_key(cls, path: Path) -> tuple[int, int] | None:
+        match = cls._LEVEL_FILE_PATTERN.fullmatch(path.name)
+        if match is None:
+            return None
+        return int(match.group("level")), int(match.group("category") or 0)
+
+    @classmethod
+    def _level_files(cls, folder: Path) -> list[Path]:
+        try:
+            files = [path for path in folder.iterdir() if path.is_file() and cls._level_file_key(path) is not None]
+        except OSError:
+            return []
+        return sorted(files, key=lambda path: (cls._level_file_key(path), path.name.lower()))
+
+    def _current_level_key(self) -> tuple[int, int]:
+        return self.level.level, self.level.category
+
+    def _matching_level_path(self, files: list[Path]) -> Path | None:
+        current_key = self._current_level_key()
+        return next((path for path in files if self._level_file_key(path) == current_key), None)
+
+    def _navigation_target(self, direction: int, files: list[Path] | None = None) -> Path | None:
+        if self.level_folder is None:
+            return None
+        files = self._level_files(self.level_folder) if files is None else files
+        if not files:
+            return None
+        current_key = self._current_level_key()
+        if direction < 0:
+            candidates = [path for path in files if self._level_file_key(path) < current_key]
+            return candidates[-1] if candidates else None
+        candidates = [path for path in files if self._level_file_key(path) > current_key]
+        return candidates[0] if candidates else None
+
+    def _refresh_level_navigation(self) -> None:
+        files = self._level_files(self.level_folder) if self.level_folder is not None else []
+        previous_path = self._navigation_target(-1, files)
+        next_path = self._navigation_target(1, files)
+        self.prev_level_action.setEnabled(previous_path is not None)
+        self.next_level_action.setEnabled(next_path is not None)
+        self.prev_level_action.setText(
+            f"Prev ({previous_path.stem})" if previous_path is not None else "Prev"
+        )
+        self.next_level_action.setText(
+            f"Next ({next_path.stem})" if next_path is not None else "Next"
+        )
+
+    def _open_adjacent_level(self, direction: int) -> None:
+        target = self._navigation_target(direction)
+        if target is None or not self._confirm_discard():
+            return
+        self._load_path(target, from_level_folder=True)
+
+    def open_previous_level(self) -> None:
+        self._open_adjacent_level(-1)
+
+    def open_next_level(self) -> None:
+        self._open_adjacent_level(1)
 
     def validate(self):
         snapshot = self.level.clone()
@@ -450,20 +579,31 @@ class MainWindow(QMainWindow):
         return result
 
     def save(self) -> bool:
-        if self.path is None:
+        if self.auto_level_save and self.level_folder is not None:
+            target = self.level_folder / self._default_file_name()
+        elif self.path is not None:
+            target = self.path
+        else:
             return self.save_as()
+        return self._save_to_path(target)
+
+    def _save_to_path(self, target: Path) -> bool:
         result = self.validate()
         if not result.is_valid:
             QMessageBox.warning(self, "Validation failed", "Fix validation errors before saving.")
             return False
         try:
-            save_level(self.path, self.level, create_backup=True)
+            save_level(target, self.level, create_backup=True)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
-        self.recent_files.add(self.path)
+        self.path = target
+        self.level_folder = target.parent
+        self.settings.set("last_save_dir", str(target.parent))
+        self.recent_files.add(target)
         self._set_dirty(False)
-        self.statusBar().showMessage(f"Saved {self.path}", 5000)
+        self._refresh_level_navigation()
+        self.statusBar().showMessage(f"Saved {target}", 5000)
         return True
 
     def save_as(self) -> bool:
@@ -472,9 +612,16 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Save Pixel level", str(Path(default_dir) / default_name), "JSON (*.json)")
         if not path:
             return False
-        self.path = Path(path)
-        self.settings.set("last_save_dir", str(self.path.parent))
-        return self.save()
+        target = Path(path)
+        if target.suffix.lower() != ".json":
+            target = target.with_suffix(".json")
+        if not self._save_to_path(target):
+            return False
+        # Save As deliberately leaves the file at the exact custom location/name.
+        # Prev/Next will restore level-number based saving after a folder level is opened.
+        self.auto_level_save = False
+        self._set_dirty(False)
+        return True
 
     def _default_file_name(self) -> str:
         return f"{self.level.level}.json" if self.level.category == 0 else f"{self.level.level}.{self.level.category}.json"
@@ -526,6 +673,19 @@ class MainWindow(QMainWindow):
 
         self._wrap_change("Resize pixel grid", mutate)
         self.statusBar().showMessage(f"Resized pixel grid to {width}x{height}", 5000)
+
+    def rotate_pixel_grid_clockwise(self) -> None:
+        old_width = self.level.pixel_grid.width
+        old_height = self.level.pixel_grid.height
+
+        def mutate() -> None:
+            self.level.pixel_grid.rotate_clockwise()
+
+        self._wrap_change("Rotate pixel grid clockwise", mutate)
+        self.statusBar().showMessage(
+            f"Rotated pixel grid 90° clockwise ({old_width}x{old_height} -> {old_height}x{old_width})",
+            5000,
+        )
 
     def trim_empty_pixel_border(self) -> None:
         grid = self.level.pixel_grid
@@ -623,7 +783,15 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event) -> None:
         urls = event.mimeData().urls()
         if urls and self._confirm_discard():
-            self._load_path(Path(urls[0].toLocalFile()))
+            dropped_path = Path(urls[0].toLocalFile())
+            if dropped_path.is_dir():
+                files = self._level_files(dropped_path)
+                if files:
+                    self.level_folder = dropped_path
+                    self.auto_level_save = True
+                    self._load_path(self._matching_level_path(files) or files[0], from_level_folder=True)
+            else:
+                self._load_path(dropped_path)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._confirm_discard():

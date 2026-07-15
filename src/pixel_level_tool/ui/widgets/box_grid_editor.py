@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from pixel_level_tool.domain.enums import COLOR_RGB, CellShape, Direction, ItemColor
+from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, CellShape, Direction, ItemColor
 from pixel_level_tool.domain.level_models import (
     ArrowLockCellEffectData,
     BoxCellData,
@@ -185,7 +185,7 @@ class BoxGridEditor(QGraphicsView):
         label.setZValue(LABEL_Z)
         self.scene.addItem(label)
         if isinstance(cell, TunnelCellData):
-            stored_colors = ", ".join(stored.color.name for stored in cell.stored_cells) or "empty"
+            stored_colors = ", ".join(COLOR_NAMES[stored.color] for stored in cell.stored_cells) or "empty"
             tunnel_tooltip = (
                 f"Tunnel facing {cell.direction.name}; "
                 f"{len(cell.stored_cells)} stored box(es): {stored_colors}"
@@ -373,7 +373,7 @@ class BoxGridEditor(QGraphicsView):
         if isinstance(obstacle, LargeBlockObstacleData):
             return f"BLOCK x{obstacle.count}"
         if isinstance(obstacle, ColorGateObstacleData):
-            return f"GATE {obstacle.required_color.name.removesuffix('_')} x{obstacle.count}"
+            return f"GATE {COLOR_NAMES[obstacle.required_color]} x{obstacle.count}"
         if isinstance(obstacle, LockedGateObstacleData):
             return f"LOCK {obstacle.lock_key_gate.name.removesuffix('_')} P{obstacle.priority}"
         if isinstance(obstacle, WoolCrateObstacleData):

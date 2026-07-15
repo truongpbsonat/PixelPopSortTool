@@ -6,7 +6,19 @@ from PySide6.QtWidgets import QDialog
 
 from pixel_level_tool.domain.enums import CellShape, Direction, EMPTY_COLOR_ID, ItemColor
 from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
+from pixel_level_tool.services.level_serializer import save_level
 from pixel_level_tool.ui.main_window import MainWindow
+
+
+def _valid_level(level_number: int, category: int = 0) -> PixelLevelData:
+    return PixelLevelData(
+        grid_rows=3,
+        grid_cols=3,
+        level=level_number,
+        category=category,
+        grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300)],
+        pixel_grid=PixelGridData(3, 1, [7, 7, 7]),
+    )
 
 
 def test_main_window_smoke(qtbot):
@@ -18,6 +30,7 @@ def test_main_window_smoke(qtbot):
     assert window.import_legacy_button is not None
     assert window.trim_empty_button is not None
     assert window.replace_color_button is not None
+    assert window.rotate_pixel_button is not None
     assert window.box_editor is not None
     assert window.pixel_editor is not None
     assert not hasattr(window, "level_grid_version_spin")
@@ -81,6 +94,51 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     assert window.level.pixel_grid.color_ids == [0, 1, EMPTY_COLOR_ID, 2, 3, EMPTY_COLOR_ID]
     assert window.pixel_editor.scene.sceneRect().width() == 72
     assert window.pixel_editor.scene.sceneRect().height() == 48
+    window._set_dirty(False)
+    window.close()
+
+
+def test_toolbar_tooltips_show_keyboard_shortcuts(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    actions = (
+        window.new_action,
+        window.open_action,
+        window.prev_level_action,
+        window.next_level_action,
+        window.save_action,
+        window.save_as_action,
+        window.undo_action,
+        window.redo_action,
+    )
+    for action in actions:
+        shortcut = action.shortcut().toString()
+        assert shortcut
+        assert f"({shortcut})" in action.toolTip()
+
+    assert window.validate_action.toolTip() == "Validate the current level"
+    window.close()
+
+
+def test_rotate_pixel_grid_updates_scene_and_supports_undo(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level.pixel_grid = PixelGridData(3, 2, [0, 1, 2, 3, 4, 5])
+    window._refresh_all()
+
+    window.rotate_pixel_button.click()
+
+    assert (window.level.pixel_grid.width, window.level.pixel_grid.height) == (2, 3)
+    assert window.level.pixel_grid.color_ids == [3, 0, 4, 1, 5, 2]
+    assert window.pixel_editor.scene.sceneRect().width() == 48
+    assert window.pixel_editor.scene.sceneRect().height() == 72
+    assert window.dirty
+
+    window.commands.undo()
+
+    assert (window.level.pixel_grid.width, window.level.pixel_grid.height) == (3, 2)
+    assert window.level.pixel_grid.color_ids == [0, 1, 2, 3, 4, 5]
     window._set_dirty(False)
     window.close()
 
@@ -173,6 +231,102 @@ def test_default_save_name_uses_category_variant_suffix(qtbot):
     window.close()
 
 
+def test_level_folder_files_are_sorted_numerically_and_ignore_other_json(tmp_path):
+    for name in ("10.json", "2.1.json", "2.json", "notes.json", "3.json.bak"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    assert [path.name for path in MainWindow._level_files(tmp_path)] == [
+        "2.json",
+        "2.1.json",
+        "10.json",
+    ]
+
+
+def test_open_folder_and_prev_next_navigate_existing_levels(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+    level_folder = tmp_path / "levels"
+    level_folder.mkdir()
+    save_level(level_folder / "1.json", _valid_level(1))
+    save_level(level_folder / "3.json", _valid_level(3))
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.QFileDialog.getExistingDirectory",
+        lambda *args, **kwargs: str(level_folder),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.open_action.trigger()
+
+    assert window.level.level == 1
+    assert window.path == level_folder / "1.json"
+    assert not window.prev_level_action.isEnabled()
+    assert window.next_level_action.isEnabled()
+    assert "3" in window.next_level_action.text()
+
+    window.next_level_action.trigger()
+
+    assert window.level.level == 3
+    assert window.path == level_folder / "3.json"
+    assert window.prev_level_action.isEnabled()
+    assert not window.next_level_action.isEnabled()
+    window.close()
+
+
+def test_save_in_level_folder_uses_current_level_number(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+    level_folder = tmp_path / "levels"
+    level_folder.mkdir()
+    saved_paths = []
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.save_level",
+        lambda path, level, **kwargs: saved_paths.append(path),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _valid_level(12, category=2)
+    window.level_folder = level_folder
+    window.auto_level_save = True
+    window._refresh_all()
+
+    assert window.save()
+
+    assert saved_paths == [level_folder / "12.2.json"]
+    assert window.path == level_folder / "12.2.json"
+    window.close()
+
+
+def test_save_as_uses_custom_path_and_disables_numbered_auto_save(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+    level_folder = tmp_path / "levels"
+    level_folder.mkdir()
+    custom_path_without_suffix = tmp_path / "exports" / "special-name"
+    saved_paths = []
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(custom_path_without_suffix), "JSON (*.json)"),
+    )
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.save_level",
+        lambda path, level, **kwargs: saved_paths.append(path),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _valid_level(7)
+    window.level_folder = level_folder
+    window.auto_level_save = True
+    window._refresh_all()
+
+    assert window.save_as()
+
+    assert saved_paths == [custom_path_without_suffix.with_suffix(".json")]
+    assert window.path == custom_path_without_suffix.with_suffix(".json")
+    assert not window.auto_level_save
+    window.close()
+
+
 def test_color_palette_shows_pixel_minus_box_delta(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
@@ -180,16 +334,16 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
         grid_rows=3,
         grid_cols=3,
         grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300)],
-        pixel_grid=PixelGridData(4, 1, [0, 0, 0, 1]),
+        pixel_grid=PixelGridData(4, 1, [7, 7, 7, 3]),
     )
 
     window._refresh_all()
 
     assert window.color_palette._buttons[ItemColor.Red].text() == ""
     assert window.color_palette._buttons[ItemColor.Green].text() == "+1"
-    assert window.color_palette._buttons[ItemColor.Blue].text() == ""
+    assert window.color_palette._buttons[ItemColor.DarkBlue].text() == ""
 
-    window.level.pixel_grid = PixelGridData(2, 1, [0, 0])
+    window.level.pixel_grid = PixelGridData(2, 1, [7, 7])
     window._refresh_all()
 
     assert window.color_palette._buttons[ItemColor.Red].text() == "-1"
@@ -199,7 +353,7 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
 def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch):
     class DialogStub:
         source_color = ItemColor.Red
-        target_color = ItemColor.Cyan
+        target_color = ItemColor.SkyBlue
 
         def __init__(self, *args, **kwargs):
             pass
@@ -217,20 +371,20 @@ def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch
             BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300),
             BoxCellData(0, 1, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green, 301),
         ],
-        pixel_grid=PixelGridData(4, 1, [0, 1, 0, EMPTY_COLOR_ID]),
+        pixel_grid=PixelGridData(4, 1, [7, 3, 7, EMPTY_COLOR_ID]),
     )
     window._refresh_all()
 
     window.replace_color_button.click()
 
-    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Cyan, ItemColor.Green]
-    assert window.level.pixel_grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID]
-    assert window.color_palette.selected_color == ItemColor.Cyan
+    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.SkyBlue, ItemColor.Green]
+    assert window.level.pixel_grid.color_ids == [8, 3, 8, EMPTY_COLOR_ID]
+    assert window.color_palette.selected_color == ItemColor.SkyBlue
     assert window.dirty
 
     window.commands.undo()
 
     assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Red, ItemColor.Green]
-    assert window.level.pixel_grid.color_ids == [0, 1, 0, EMPTY_COLOR_ID]
+    assert window.level.pixel_grid.color_ids == [7, 3, 7, EMPTY_COLOR_ID]
     window._set_dirty(False)
     window.close()

@@ -11,12 +11,31 @@ def test_row_major_index_and_top_row():
 
 def test_paint_erase_resize_preserves_top_left():
     grid = PixelGridData(2, 2, [0, 1, 2, 3])
-    grid.set_color_id(0, 1, int(ItemColor.Cyan))
-    assert grid.get_color_id(0, 1) == int(ItemColor.Cyan)
+    grid.set_color_id(0, 1, int(ItemColor.SkyBlue))
+    assert grid.get_color_id(0, 1) == int(ItemColor.SkyBlue)
     grid.set_color_id(0, 1, EMPTY_COLOR_ID)
     assert grid.get_color_id(0, 1) == EMPTY_COLOR_ID
     grid.resize(3, 3)
     assert grid.color_ids == [0, EMPTY_COLOR_ID, -1, 2, 3, -1, -1, -1, -1]
+
+
+def test_rotate_clockwise_swaps_dimensions_and_rotates_all_pixels():
+    grid = PixelGridData(3, 2, [0, 1, 2, 3, 4, 5])
+
+    grid.rotate_clockwise()
+
+    assert (grid.width, grid.height) == (2, 3)
+    assert grid.color_ids == [3, 0, 4, 1, 5, 2]
+
+
+def test_four_clockwise_rotations_restore_grid():
+    grid = PixelGridData(3, 2, [0, 1, 2, 3, 4, 5])
+
+    for _ in range(4):
+        grid.rotate_clockwise()
+
+    assert (grid.width, grid.height) == (3, 2)
+    assert grid.color_ids == [0, 1, 2, 3, 4, 5]
 
 
 def test_trim_empty_borders_keeps_empty_rows_and_columns_inside_content():
@@ -52,7 +71,7 @@ def test_trim_empty_borders_leaves_fully_empty_grid_unchanged():
 
 
 def test_replace_color_changes_all_matching_pixels_only():
-    grid = PixelGridData(5, 1, [0, 1, 0, EMPTY_COLOR_ID, 2])
+    grid = PixelGridData(5, 1, [7, 1, 7, EMPTY_COLOR_ID, 2])
 
-    assert grid.replace_color(ItemColor.Red, ItemColor.Cyan) == 2
-    assert grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID, 2]
+    assert grid.replace_color(ItemColor.Red, ItemColor.SkyBlue) == 2
+    assert grid.color_ids == [8, 1, 8, EMPTY_COLOR_ID, 2]

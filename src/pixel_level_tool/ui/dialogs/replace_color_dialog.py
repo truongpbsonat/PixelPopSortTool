@@ -4,7 +4,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel
 
-from pixel_level_tool.domain.enums import COLOR_RGB, ItemColor
+from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, ItemColor
 
 
 class ReplaceColorDialog(QDialog):
@@ -38,7 +38,7 @@ class ReplaceColorDialog(QDialog):
         for color in ItemColor:
             pixmap = QPixmap(18, 18)
             pixmap.fill(QColor(*COLOR_RGB[color]))
-            combo.addItem(QIcon(pixmap), f"{int(color):2d}  {color.name}", color)
+            combo.addItem(QIcon(pixmap), f"{int(color):2d}  {COLOR_NAMES[color]}", color)
         return combo
 
     @property

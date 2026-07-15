@@ -52,7 +52,7 @@ def test_box_cells_use_soft_inner_borders_and_separate_outline(qtbot):
     qtbot.addWidget(editor)
 
     level = PixelLevelData(grid_rows=6, grid_cols=6)
-    level.add_box(BoxCellData(1, 1, CellShape.Rectangle_3x2, Direction.Up, ItemColor.Blue))
+    level.add_box(BoxCellData(1, 1, CellShape.Rectangle_3x2, Direction.Up, ItemColor.DarkBlue))
     editor.set_level(level)
 
     fill_items = [
@@ -80,7 +80,7 @@ def test_selected_outline_stays_above_box_and_obstacle_layers(qtbot):
         1,
         CellShape.Rectangle_3x2,
         Direction.Up,
-        ItemColor.Blue,
+        ItemColor.DarkBlue,
         effects=[FrozenCellEffectData(2)],
     )
     level = PixelLevelData(grid_rows=6, grid_cols=6, grid_cells=[cell])
@@ -107,7 +107,7 @@ def test_box_grid_displays_model_row_zero_at_the_bottom(qtbot):
     qtbot.addWidget(editor)
 
     bottom = BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green)
-    top = BoxCellData(3, 5, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue)
+    top = BoxCellData(3, 5, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue)
     editor.set_level(PixelLevelData(grid_rows=6, grid_cols=6, grid_cells=[bottom, top]))
 
     fill_rows = {
@@ -133,7 +133,7 @@ def test_effect_and_obstacle_have_readable_grid_badges(qtbot):
         effects=[FrozenCellEffectData(3)],
     )
     level = PixelLevelData(grid_rows=3, grid_cols=4, grid_cells=[cell])
-    level.obstacles = [ColorGateObstacleData(0, 0, 3, 1, 2, ItemColor.Blue)]
+    level.obstacles = [ColorGateObstacleData(0, 0, 3, 1, 2, ItemColor.DarkBlue)]
     editor.set_level(level)
 
     badge_text = {
@@ -143,7 +143,7 @@ def test_effect_and_obstacle_have_readable_grid_badges(qtbot):
     }
 
     assert "ICE x3" in badge_text
-    assert "GATE Blue x2" in badge_text
+    assert "GATE Dark Blue x2" in badge_text
     assert any(item.data(1) == "obstacle-area" and item.zValue() > 1 for item in editor.scene.items())
 
 
@@ -155,7 +155,7 @@ def test_tunnel_has_rotated_icon_direction_and_stored_count(qtbot):
         0,
         CellShape.Square_3x3,
         Direction.Left,
-        ItemColor.Blue,
+        ItemColor.DarkBlue,
         stored_cells=[BoxCellData(0, 0), BoxCellData(0, 0)],
     )
     editor.set_level(PixelLevelData(grid_cells=[tunnel]))

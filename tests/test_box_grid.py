@@ -5,9 +5,9 @@ from pixel_level_tool.domain.level_models import BoxCellData, LargeBlockObstacle
 def test_placement_bounds_overlap_and_ids():
     level = PixelLevelData(grid_rows=5, grid_cols=5)
     assert level.add_box(BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red))
-    assert not level.add_box(BoxCellData(2, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue))
-    assert not level.add_box(BoxCellData(4, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue))
-    assert level.add_box(BoxCellData(0, 2, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue))
+    assert not level.add_box(BoxCellData(2, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue))
+    assert not level.add_box(BoxCellData(4, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue))
+    assert level.add_box(BoxCellData(0, 2, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue))
     level.assign_deterministic_ids()
     assert [cell.id for cell in level.grid_cells] == [300, 301]
 
@@ -15,7 +15,7 @@ def test_placement_bounds_overlap_and_ids():
 def test_delete_box_cascades_invalid_target_obstacles():
     level = PixelLevelData(grid_rows=3, grid_cols=6)
     first = BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red)
-    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue)
+    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue)
     level.grid_cells = [first, second]
     level.obstacles = [LinkedContainerObstacleData([first.internal_uid, second.internal_uid])]
     level.remove_box(0)

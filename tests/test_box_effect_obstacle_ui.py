@@ -22,7 +22,7 @@ def make_level():
         grid_cols=8,
         grid_cells=[
             BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
-            BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue),
+            BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue),
         ],
     )
 
@@ -52,10 +52,10 @@ def test_tunnel_stored_boxes_keep_json_order_and_are_editable(qtbot):
         0,
         CellShape.Square_3x3,
         Direction.Right,
-        ItemColor.Blue,
+        ItemColor.DarkBlue,
         stored_cells=[
             BoxCellData(4, 5, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
-            BoxCellData(6, 7, CellShape.Rectangle_6x1, Direction.Left, ItemColor.Cyan),
+            BoxCellData(6, 7, CellShape.Rectangle_6x1, Direction.Left, ItemColor.SkyBlue),
         ],
     )
     level = PixelLevelData(grid_cells=[tunnel])
@@ -64,13 +64,16 @@ def test_tunnel_stored_boxes_keep_json_order_and_are_editable(qtbot):
     inspector.set_context(level, [0])
 
     assert not inspector.stored_panel.isHidden()
-    assert [inspector.stored_cells.item(row).text().split()[1] for row in range(2)] == ["Red", "Cyan"]
+    assert [inspector.stored_cells.item(row).text() for row in range(2)] == [
+        "#1  Red · Rectangle_3x1 · Up",
+        "#2  Sky Blue · Rectangle_6x1 · Left",
+    ]
     assert all(not inspector.stored_cells.item(row).icon().isNull() for row in range(2))
 
     inspector.stored_cells.setCurrentRow(1)
     assert inspector.stored_x.value() == 6
     assert inspector.stored_y.value() == 7
-    assert inspector.stored_color.currentData() == int(ItemColor.Cyan)
+    assert inspector.stored_color.currentData() == int(ItemColor.SkyBlue)
 
     changes = []
     inspector.model_changed.connect(lambda label, before: changes.append((label, before)))
@@ -78,7 +81,7 @@ def test_tunnel_stored_boxes_keep_json_order_and_are_editable(qtbot):
 
     assert tunnel.stored_cells[1].color == ItemColor.Green
     assert changes[0][0] == "Edit tunnel stored box"
-    assert changes[0][1].grid_cells[0].stored_cells[1].color == ItemColor.Cyan
+    assert changes[0][1].grid_cells[0].stored_cells[1].color == ItemColor.SkyBlue
 
 
 def test_obstacle_panel_creates_linked_container_from_selection(qtbot):

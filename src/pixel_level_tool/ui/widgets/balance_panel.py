@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
-from pixel_level_tool.domain.enums import COLOR_RGB, ItemColor
+from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, ItemColor
 from pixel_level_tool.domain.level_models import PixelLevelData
 
 
@@ -23,7 +23,7 @@ class BalancePanel(QWidget):
         self.table.setRowCount(len(ItemColor))
         for row, color in enumerate(ItemColor):
             rgb = COLOR_RGB[color]
-            swatch = QTableWidgetItem(color.name)
+            swatch = QTableWidgetItem(COLOR_NAMES[color])
             swatch.setBackground(QColor(*rgb))
             swatch.setForeground(QColor(255, 255, 255) if sum(rgb) < 360 else QColor(32, 32, 32))
             source_count = source.get(int(color), 0)

@@ -146,7 +146,7 @@ class ColorGateObstacleData:
     width: int = 1
     height: int = 1
     count: int = 1
-    required_color: ItemColor = ItemColor.Blue
+    required_color: ItemColor = ItemColor.DarkBlue
     id: int = 0
 
 
@@ -217,6 +217,18 @@ class PixelGridData:
         for row in range(copy_height):
             for column in range(copy_width):
                 self.color_ids[row * width + column] = old[row * old_width + column]
+
+    def rotate_clockwise(self) -> None:
+        """Rotate every pixel 90 degrees clockwise around the grid bounds."""
+        old_width, old_height = self.width, self.height
+        old_color_ids = self.color_ids
+        self.width = old_height
+        self.height = old_width
+        self.color_ids = [
+            old_color_ids[row * old_width + column]
+            for column in range(old_width)
+            for row in range(old_height - 1, -1, -1)
+        ]
 
     def fill(self, color_id: int) -> None:
         self.color_ids = [color_id] * (self.width * self.height)

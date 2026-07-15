@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pixel_level_tool.domain.enums import COLOR_RGB, CellShape, Direction, ItemColor, LockKeyGate, WoolCrateColor
+from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, CellShape, Direction, ItemColor, LockKeyGate, WoolCrateColor
 from pixel_level_tool.domain.level_models import (
     ArrowLockCellEffectData,
     BoxCellData,
@@ -212,7 +212,7 @@ class BoxInspector(QWidget):
         for direction in Direction:
             self.stored_direction.addItem(f"{int(direction)}  {direction.name}", int(direction))
         for color in ItemColor:
-            self.stored_color.addItem(_color_icon(color), f"{int(color)}  {color.name}", int(color))
+            self.stored_color.addItem(_color_icon(color), f"{int(color)}  {COLOR_NAMES[color]}", int(color))
         stored_form.addRow("Grid X", self.stored_x)
         stored_form.addRow("Grid Y", self.stored_y)
         stored_form.addRow("Shape", self.stored_shape)
@@ -281,11 +281,11 @@ class BoxInspector(QWidget):
                 suffix = f" · {effects}" if effects else ""
                 item = QListWidgetItem(
                     _color_icon(stored.color),
-                    f"#{index + 1}  {stored.color.name} · {stored.shape.name} · {stored.direction.name}{suffix}",
+                    f"#{index + 1}  {COLOR_NAMES[stored.color]} · {stored.shape.name} · {stored.direction.name}{suffix}",
                 )
                 item.setData(Qt.UserRole, index)
                 item.setToolTip(
-                    f"storedCells[{index}] — color {stored.color.name}, shape {stored.shape.name}, "
+                    f"storedCells[{index}] — color {COLOR_NAMES[stored.color]}, shape {stored.shape.name}, "
                     f"direction {stored.direction.name}"
                 )
                 self.stored_cells.addItem(item)
@@ -550,7 +550,7 @@ class ObstaclesPanel(QWidget):
         self.direction = QComboBox(); self.key = QComboBox(); self.color = QComboBox(); self.ropes = QLineEdit()
         for member in Direction: self.direction.addItem(member.name, int(member))
         for member in LockKeyGate: self.key.addItem(member.name.removesuffix("_"), int(member))
-        for member in ItemColor: self.color.addItem(member.name, int(member))
+        for member in ItemColor: self.color.addItem(COLOR_NAMES[member], int(member))
         self.direction.currentIndexChanged.connect(self._apply_properties); self.key.currentIndexChanged.connect(self._apply_properties); self.color.currentIndexChanged.connect(self._apply_properties); self.ropes.editingFinished.connect(self._apply_properties)
         form.addRow("direction", self.direction); form.addRow("key", self.key); form.addRow("color", self.color); form.addRow("ropes", self.ropes)
         root.addLayout(form)

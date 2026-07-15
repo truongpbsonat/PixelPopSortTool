@@ -41,6 +41,16 @@ Smoke-test entrypoints:
 .\dist\MarbleSortPixelLevelTool\MarbleSortPixelLevelTool.exe --smoke-test
 ```
 
+## Level Folder Workflow
+
+Use **Open Folder** (`Ctrl+O`) to select the folder containing numbered level files. The editor recognizes
+`<level>.json` and category variants such as `<level>.<category>.json`, opens the matching/current level
+or the first available level, and enables **Prev** / **Next** (`Alt+Left` / `Alt+Right`) for fast navigation.
+
+While working in a selected level folder, **Save** (`Ctrl+S`) writes directly to the numbered file for the
+Level currently shown in the editor. **Save As** is the only action that opens a file dialog and allows a
+custom folder or file name. Existing files are still backed up to `.json.bak` before being overwritten.
+
 ## Test
 
 ```powershell
@@ -113,25 +123,36 @@ opened or saved. Unsupported grid-cell subtypes are also rejected instead of bei
 
 ## ItemColor IDs
 
-| ID | Color |
-| ---: | --- |
-| 0 | Red |
-| 1 | Green |
-| 2 | Blue |
-| 3 | Yellow |
-| 4 | Pink |
-| 5 | Orange |
-| 6 | Purple |
-| 7 | Black |
-| 8 | Brown |
-| 9 | Cyan |
-| 10 | Gray |
-| 11 | LightPink |
-| 12 | Lime |
-| 13 | Periwinkle |
-| 14 | Teal |
-| 15 | Violet |
-| 16 | White |
+| ID | Color | Hex |
+| ---: | --- | --- |
+| 0 | Black | `#1A1A1A` |
+| 1 | Dark Blue | `#1565C0` |
+| 2 | White | `#ffffff` |
+| 3 | Green | `#4CAF50` |
+| 4 | Orange | `#FF8C00` |
+| 5 | Light Pink | `#FF69B4` |
+| 6 | Dark Purple | `#7B1FA2` |
+| 7 | Red | `#E53935` |
+| 8 | Sky Blue | `#29B6F6` |
+| 9 | Yellow | `#FFD600` |
+| 10 | Magenta Pink | `#EC407A` |
+| 11 | Light Gray | `#B0BEC5` |
+| 12 | Dark Orange | `#FF6F00` |
+| 13 | Light Green | `#66BB6A` |
+| 14 | Fuchsia Pink | `#F06292` |
+| 15 | Brick Red | `#C62828` |
+| 16 | Medium Gray | `#9E9E9E` |
+| 17 | Hot Pink | `#F50057` |
+| 18 | Light Yellow | `#FDD835` |
+| 19 | Olive | `#827717` |
+| 20 | Violet | `#9C27B0` |
+| 21 | Olive Green | `#8BC34A` |
+| 22 | Lime Green | `#A5D6A7` |
+| 23 | Burnt Orange | `#E65100` |
+| 24 | Lavender | `#CE93D8` |
+| 25 | Teal | `#00ACC1` |
+| 26 | Salmon | `#FF7043` |
+| 27 | Yellow-Green | `#CDDC39` |
 
 Empty pixels use `-1`.
 
