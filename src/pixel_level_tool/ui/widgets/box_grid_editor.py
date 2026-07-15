@@ -67,6 +67,7 @@ class BoxGridEditor(QGraphicsView):
         self.selected_shape = CellShape.Square_3x3
         self.selected_direction = Direction.Up
         self.selected_active = True
+        self.selected_is_tunnel = False
         self.selected_index: int | None = None
         self.selected_indices: set[int] = set()
         self._drag_index: int | None = None
@@ -89,11 +90,19 @@ class BoxGridEditor(QGraphicsView):
         self._reset_drag()
         self.refresh()
 
-    def set_tool(self, shape: CellShape, direction: Direction, color: ItemColor, is_active: bool) -> None:
+    def set_tool(
+        self,
+        shape: CellShape,
+        direction: Direction,
+        color: ItemColor,
+        is_active: bool,
+        is_tunnel: bool = False,
+    ) -> None:
         self.selected_shape = shape
         self.selected_direction = direction
         self.selected_color = color
         self.selected_active = is_active
+        self.selected_is_tunnel = is_tunnel
         if self.level is not None and self.selected_index is not None and self.selected_index < len(self.level.grid_cells):
             cell = self.level.grid_cells[self.selected_index]
             if (
@@ -535,19 +544,31 @@ class BoxGridEditor(QGraphicsView):
             return
         if event.button() == Qt.LeftButton and 0 <= row < self.level.grid_rows and 0 <= col < self.level.grid_cols:
             before = self.level.clone()
-            box = BoxCellData(
-                grid_x=col,
-                grid_y=row,
-                shape=self.selected_shape,
-                direction=self.selected_direction,
-                color=self.selected_color,
-                is_active=self.selected_active,
-            )
+            cell_data = {
+                "grid_x": col,
+                "grid_y": row,
+                "shape": self.selected_shape,
+                "direction": self.selected_direction,
+                "color": self.selected_color,
+                "is_active": self.selected_active,
+            }
+            if self.selected_is_tunnel:
+                stored_cell = BoxCellData(
+                    grid_x=0,
+                    grid_y=0,
+                    shape=self.selected_shape,
+                    direction=self.selected_direction,
+                    color=self.selected_color,
+                    is_active=self.selected_active,
+                )
+                box = TunnelCellData(**cell_data, stored_cells=[stored_cell])
+            else:
+                box = BoxCellData(**cell_data)
             if self.level.add_box(box):
                 self.selected_index = len(self.level.grid_cells) - 1
                 self.selected_indices = {self.selected_index}
                 self.selection_changed.emit([self.selected_index])
-                self.model_changed.emit("Add box", before)
+                self.model_changed.emit("Add tunnel" if self.selected_is_tunnel else "Add box", before)
                 self.refresh()
         super().mousePressEvent(event)
 

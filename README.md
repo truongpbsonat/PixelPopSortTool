@@ -113,6 +113,8 @@ Select one box and use the **Box Inspector** tab to add, edit, or remove effects
 Tunnel grid cells can be opened, round-tripped without losing `color`, `direction`, or `storedCells`,
 and are shown on the Box Grid with a direction-aware tunnel icon and stored-box count. Select a tunnel
 to view its color-coded `storedCells` in JSON order and edit each stored box from **Box Inspector**.
+To create one, choose **Tunnel** in the **Type** field above the Box Grid, then click an empty grid cell.
+New tunnels start with one stored box using the selected shape, direction, color, and active state.
 
 Supported source-grid obstacles are LinkedContainer, LargeBlockObstacle, Pins, LockedGate,
 WoolCrate, ColorGate, and Elevator. Ctrl-click boxes to create target-based or area obstacles from

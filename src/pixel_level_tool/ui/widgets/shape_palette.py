@@ -12,6 +12,9 @@ class ShapePalette(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QFormLayout(self)
+        self.cell_type_combo = QComboBox()
+        self.cell_type_combo.addItem("Normal", False)
+        self.cell_type_combo.addItem("Tunnel", True)
         self.shape_combo = QComboBox()
         for shape in CellShape:
             self.shape_combo.addItem(f"{int(shape)}  {shape.name}", shape)
@@ -20,9 +23,11 @@ class ShapePalette(QWidget):
             self.direction_combo.addItem(f"{int(direction)}  {direction.name}", direction)
         self.active_check = QCheckBox()
         self.active_check.setChecked(True)
+        layout.addRow("Type", self.cell_type_combo)
         layout.addRow("Shape", self.shape_combo)
         layout.addRow("Direction", self.direction_combo)
         layout.addRow("Active", self.active_check)
+        self.cell_type_combo.currentIndexChanged.connect(self.shape_changed.emit)
         self.shape_combo.currentIndexChanged.connect(self.shape_changed.emit)
         self.direction_combo.currentIndexChanged.connect(self.shape_changed.emit)
         self.active_check.toggled.connect(self.shape_changed.emit)
@@ -38,4 +43,8 @@ class ShapePalette(QWidget):
     @property
     def is_active(self) -> bool:
         return self.active_check.isChecked()
+
+    @property
+    def is_tunnel(self) -> bool:
+        return bool(self.cell_type_combo.currentData())
 

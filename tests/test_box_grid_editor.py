@@ -202,3 +202,41 @@ def test_tunnel_has_rotated_icon_direction_and_stored_count(qtbot):
     assert counts == ["2"]
     assert len(icons) == 1
     assert icons[0].rotation() == 270
+
+
+def test_tunnel_tool_adds_valid_tunnel_to_box_grid(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+    editor.resize(320, 320)
+    editor.show()
+    qtbot.waitExposed(editor)
+
+    level = PixelLevelData(grid_rows=6, grid_cols=6)
+    editor.set_level(level)
+    editor.set_tool(
+        CellShape.Rectangle_3x1,
+        Direction.Right,
+        ItemColor.Green,
+        True,
+        is_tunnel=True,
+    )
+    changes = []
+    editor.model_changed.connect(lambda label, before: changes.append((label, before)))
+    position = editor.mapFromScene(QPointF(CELL / 2, 4 * CELL + CELL / 2))
+
+    qtbot.mouseClick(editor.viewport(), Qt.LeftButton, pos=position)
+
+    assert len(level.grid_cells) == 1
+    tunnel = level.grid_cells[0]
+    assert isinstance(tunnel, TunnelCellData)
+    assert (tunnel.grid_x, tunnel.grid_y) == (0, 1)
+    assert tunnel.shape == CellShape.Rectangle_3x1
+    assert tunnel.direction == Direction.Right
+    assert tunnel.color == ItemColor.Green
+    assert len(tunnel.stored_cells) == 1
+    assert type(tunnel.stored_cells[0]) is BoxCellData
+    assert tunnel.stored_cells[0].shape == CellShape.Rectangle_3x1
+    assert tunnel.stored_cells[0].direction == Direction.Right
+    assert tunnel.stored_cells[0].color == ItemColor.Green
+    assert changes[0][0] == "Add tunnel"
+    assert changes[0][1].grid_cells == []
