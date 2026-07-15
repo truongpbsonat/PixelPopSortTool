@@ -90,6 +90,15 @@ class PixelGridData:
     def clear(self) -> None:
         self.fill(EMPTY_COLOR_ID)
 
+    def replace_color(self, source: ItemColor, target: ItemColor) -> int:
+        """Replace every occurrence of ``source`` and return the pixel count."""
+        source_id = int(source)
+        target_id = int(target)
+        replaced = sum(color_id == source_id for color_id in self.color_ids)
+        if replaced:
+            self.color_ids = [target_id if color_id == source_id else color_id for color_id in self.color_ids]
+        return replaced
+
     def trim_empty_borders(self) -> bool:
         """Remove consecutive empty rows and columns around painted content."""
         if self.width <= 0 or self.height <= 0:
@@ -166,6 +175,20 @@ class PixelLevelData:
 
     def target_histogram(self) -> Counter[int]:
         return self.pixel_grid.histogram()
+
+    def replace_color(self, source: ItemColor, target: ItemColor) -> tuple[int, int]:
+        """Replace a color in both source boxes and target pixels.
+
+        Returns the number of changed box cells and pixel cells respectively.
+        """
+        if source == target:
+            return 0, 0
+        box_count = 0
+        for cell in self.grid_cells:
+            if cell.color == source:
+                cell.color = target
+                box_count += 1
+        return box_count, self.pixel_grid.replace_color(source, target)
 
     def can_place(self, candidate: BoxCellData, ignore_index: int | None = None) -> bool:
         occupied: set[tuple[int, int]] = set()

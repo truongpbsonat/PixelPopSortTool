@@ -17,6 +17,7 @@ def test_main_window_smoke(qtbot):
     assert window.save_action is not None
     assert window.import_legacy_button is not None
     assert window.trim_empty_button is not None
+    assert window.replace_color_button is not None
     assert window.box_editor is not None
     assert window.pixel_editor is not None
     assert not hasattr(window, "level_grid_version_spin")
@@ -192,4 +193,44 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
     window._refresh_all()
 
     assert window.color_palette._buttons[ItemColor.Red].text() == "-1"
+    window.close()
+
+
+def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch):
+    class DialogStub:
+        source_color = ItemColor.Red
+        target_color = ItemColor.Cyan
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.Accepted
+
+    monkeypatch.setattr("pixel_level_tool.ui.main_window.ReplaceColorDialog", DialogStub)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = PixelLevelData(
+        grid_rows=3,
+        grid_cols=4,
+        grid_cells=[
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300),
+            BoxCellData(0, 1, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green, 301),
+        ],
+        pixel_grid=PixelGridData(4, 1, [0, 1, 0, EMPTY_COLOR_ID]),
+    )
+    window._refresh_all()
+
+    window.replace_color_button.click()
+
+    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Cyan, ItemColor.Green]
+    assert window.level.pixel_grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID]
+    assert window.color_palette.selected_color == ItemColor.Cyan
+    assert window.dirty
+
+    window.commands.undo()
+
+    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Red, ItemColor.Green]
+    assert window.level.pixel_grid.color_ids == [0, 1, 0, EMPTY_COLOR_ID]
+    window._set_dirty(False)
     window.close()

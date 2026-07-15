@@ -49,3 +49,10 @@ def test_trim_empty_borders_leaves_fully_empty_grid_unchanged():
     assert not grid.trim_empty_borders()
     assert (grid.width, grid.height) == (3, 2)
     assert grid.color_ids == [EMPTY_COLOR_ID] * 6
+
+
+def test_replace_color_changes_all_matching_pixels_only():
+    grid = PixelGridData(5, 1, [0, 1, 0, EMPTY_COLOR_ID, 2])
+
+    assert grid.replace_color(ItemColor.Red, ItemColor.Cyan) == 2
+    assert grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID, 2]

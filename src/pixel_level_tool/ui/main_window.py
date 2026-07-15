@@ -34,6 +34,7 @@ from pixel_level_tool.services.recent_files_service import RecentFilesService
 from pixel_level_tool.services.settings_service import SettingsService
 from pixel_level_tool.ui.dialogs.image_import_dialog import ImageImportDialog
 from pixel_level_tool.ui.dialogs.new_level_dialog import NewLevelDialog
+from pixel_level_tool.ui.dialogs.replace_color_dialog import ReplaceColorDialog
 from pixel_level_tool.ui.dialogs.resize_grid_dialog import ResizeGridDialog
 from pixel_level_tool.ui.widgets.box_grid_editor import BoxGridEditor
 from pixel_level_tool.ui.widgets.color_palette import ColorPalette
@@ -154,6 +155,8 @@ class MainWindow(QMainWindow):
         self.eyedropper_button = QPushButton("Eyedropper")
         self.fill_button = QPushButton("Fill All")
         self.clear_button = QPushButton("Clear All")
+        self.replace_color_button = QPushButton("Replace Color")
+        self.replace_color_button.setToolTip("Replace every Color A with Color B in the current level")
         self.trim_empty_button = QPushButton("Trim Empty Border")
         self.trim_empty_button.setToolTip("Remove empty rows and columns only from the outside edges")
         self.import_button = QPushButton("Import Image")
@@ -202,6 +205,7 @@ class MainWindow(QMainWindow):
         for button in (
             self.fill_button,
             self.clear_button,
+            self.replace_color_button,
             self.trim_empty_button,
             self.import_button,
             self.import_legacy_button,
@@ -275,6 +279,7 @@ class MainWindow(QMainWindow):
         self.flood_button.clicked.connect(lambda: self._set_pixel_mode("flood"))
         self.fill_button.clicked.connect(lambda: self.pixel_editor.fill_all(int(self.color_palette.selected_color)))
         self.clear_button.clicked.connect(lambda: self.pixel_editor.fill_all(EMPTY_COLOR_ID))
+        self.replace_color_button.clicked.connect(self.replace_color)
         self.trim_empty_button.clicked.connect(self.trim_empty_pixel_border)
         self.grid_lines_button.toggled.connect(self._toggle_pixel_grid_lines)
         self.pixel_zoom_in_button.clicked.connect(self.pixel_editor.zoom_in)
@@ -513,6 +518,28 @@ class MainWindow(QMainWindow):
         self._refresh_all()
         self.statusBar().showMessage(
             f"Trimmed pixel grid from {old_width}x{old_height} to {grid.width}x{grid.height}",
+            5000,
+        )
+
+    def replace_color(self) -> None:
+        dialog = ReplaceColorDialog(self.color_palette.selected_color, self)
+        if not self._is_dialog_accepted(dialog.exec()):
+            return
+
+        source = dialog.source_color
+        target = dialog.target_color
+        before = self.level.clone()
+        box_count, pixel_count = self.level.replace_color(source, target)
+        if not box_count and not pixel_count:
+            self.statusBar().showMessage(f"No {source.name} items found in the current level", 5000)
+            return
+
+        self.commands.push(f"Replace {source.name} with {target.name}", before, self.level)
+        self._set_dirty(True)
+        self._refresh_all()
+        self.color_palette.set_selected_color(target, emit=True)
+        self.statusBar().showMessage(
+            f"Replaced {source.name} with {target.name}: {box_count} boxes, {pixel_count} pixels",
             5000,
         )
 

@@ -15,6 +15,9 @@ The main window has a resizable splitter:
 - Right: Pixel Grid, paint/erase/eyedropper/fill/import/trim-border controls, pixel canvas.
 - Side panel: shared color palette, live color balance, validation messages.
 
+The **Replace Color** action changes every Color A to Color B in both grids of the current level and
+can be undone/redone as a single operation.
+
 ## Setup
 
 ```powershell
