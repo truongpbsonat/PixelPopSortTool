@@ -44,7 +44,7 @@ class ColorPalette(QWidget):
         for item_color, button in self._buttons.items():
             rgb = COLOR_RGB[item_color]
             checked = item_color == color
-            border = "3px solid #20242c" if checked else "1px solid #7b828c"
+            border = "3px solid #ffffff" if checked else "1px solid #7b828c"
             text = self._balance_text[item_color]
             text_color = "#f6f8fb" if sum(rgb) < 360 else "#20242c"
             button.setChecked(checked)

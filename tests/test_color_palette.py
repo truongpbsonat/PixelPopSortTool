@@ -61,3 +61,13 @@ def test_palette_rows_stay_compact_when_widget_is_tall(qtbot):
     assert second_row_button.y() - first_button.y() == (
         palette.SWATCH_SIZE + palette.layout().verticalSpacing()
     )
+
+
+def test_selected_color_uses_white_outline(qtbot):
+    palette = ColorPalette()
+    qtbot.addWidget(palette)
+
+    palette.set_selected_color(ItemColor.DarkBlue)
+
+    assert "border: 3px solid #ffffff" in palette._buttons[ItemColor.DarkBlue].styleSheet()
+    assert "border: 1px solid #7b828c" in palette._buttons[ItemColor.Red].styleSheet()
