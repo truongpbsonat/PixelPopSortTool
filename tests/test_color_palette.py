@@ -3,34 +3,23 @@ from pixel_level_tool.ui.widgets.color_palette import ColorPalette
 
 
 EXPECTED_PALETTE = [
-    (0, "Black", "#1A1A1A"),
-    (1, "Dark Blue", "#1565C0"),
-    (2, "White", "#ffffff"),
-    (3, "Green", "#4CAF50"),
-    (4, "Orange", "#FF8C00"),
-    (5, "Light Pink", "#FF69B4"),
-    (6, "Dark Purple", "#7B1FA2"),
-    (7, "Red", "#E53935"),
-    (8, "Sky Blue", "#29B6F6"),
-    (9, "Yellow", "#FFD600"),
-    (10, "Magenta Pink", "#EC407A"),
-    (11, "Light Gray", "#B0BEC5"),
-    (12, "Dark Orange", "#FF6F00"),
-    (13, "Light Green", "#66BB6A"),
-    (14, "Fuchsia Pink", "#F06292"),
-    (15, "Brick Red", "#C62828"),
-    (16, "Medium Gray", "#9E9E9E"),
-    (17, "Hot Pink", "#F50057"),
-    (18, "Light Yellow", "#FDD835"),
-    (19, "Olive", "#827717"),
-    (20, "Violet", "#9C27B0"),
-    (21, "Olive Green", "#8BC34A"),
-    (22, "Lime Green", "#A5D6A7"),
-    (23, "Burnt Orange", "#E65100"),
-    (24, "Lavender", "#CE93D8"),
-    (25, "Teal", "#00ACC1"),
-    (26, "Salmon", "#FF7043"),
-    (27, "Yellow-Green", "#CDDC39"),
+    (0, "Red", "#E50000"),
+    (1, "Green", "#02F300"),
+    (2, "Blue", "#1E90FF"),
+    (3, "Yellow", "#FDFF00"),
+    (4, "Pink", "#FF00A6"),
+    (5, "Orange", "#FF5400"),
+    (6, "Purple", "#A800FF"),
+    (7, "Black", "#14141A"),
+    (8, "Brown", "#733D1F"),
+    (9, "Cyan", "#33D9F2"),
+    (10, "Gray", "#808080"),
+    (11, "Light Pink", "#FFADD1"),
+    (12, "Lime", "#A6F233"),
+    (13, "Periwinkle", "#8C94F2"),
+    (14, "Teal", "#1AA6A6"),
+    (15, "Violet", "#8C59E6"),
+    (16, "White", "#FFFFFF"),
 ]
 
 
@@ -67,7 +56,7 @@ def test_selected_color_uses_white_outline(qtbot):
     palette = ColorPalette()
     qtbot.addWidget(palette)
 
-    palette.set_selected_color(ItemColor.DarkBlue)
+    palette.set_selected_color(ItemColor.Blue)
 
-    assert "border: 3px solid #ffffff" in palette._buttons[ItemColor.DarkBlue].styleSheet()
+    assert "border: 3px solid #ffffff" in palette._buttons[ItemColor.Blue].styleSheet()
     assert "border: 1px solid #7b828c" in palette._buttons[ItemColor.Red].styleSheet()

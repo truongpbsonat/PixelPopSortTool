@@ -35,20 +35,24 @@ def make_full_level() -> PixelLevelData:
             ScissorForWoolCrateCellEffectData(WoolCrateColor.Green),
         ],
     )
-    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue, 20)
+    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue, 20)
     hidden = BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green, 0, True)
     return PixelLevelData(
         grid_rows=4,
         grid_cols=8,
         grid_cells=[second, first],
-        pixel_grid=PixelGridData(9, 1, [7, 7, 7, 1, 1, 1, 3, 3, 3]),
+        pixel_grid=PixelGridData(
+            9,
+            1,
+            [int(ItemColor.Red)] * 3 + [int(ItemColor.Blue)] * 3 + [int(ItemColor.Green)] * 3,
+        ),
         obstacles=[
             LinkedContainerObstacleData([first.internal_uid, second.internal_uid]),
             LargeBlockObstacleData(0, 0, 3, 1, 4),
             PinsObstacleData([first.internal_uid, second.internal_uid], Direction.Right),
             LockedGateObstacleData(0, 0, 3, 1, LockKeyGate.Blue, 2),
             WoolCrateObstacleData(0, 0, 3, 1, [WoolCrateColor.Green], 1),
-            ColorGateObstacleData(3, 0, 3, 1, 5, ItemColor.DarkBlue),
+            ColorGateObstacleData(3, 0, 3, 1, 5, ItemColor.Blue),
             ElevatorObstacleData(0, 0, 3, 1, [ElevatorLayerData([hidden])]),
         ],
     )

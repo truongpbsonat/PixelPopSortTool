@@ -19,7 +19,7 @@ def _valid_level(level_number: int, category: int = 0) -> PixelLevelData:
         level=level_number,
         category=category,
         grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300)],
-        pixel_grid=PixelGridData(3, 1, [7, 7, 7]),
+        pixel_grid=PixelGridData(3, 1, [int(ItemColor.Red)] * 3),
     )
 
 
@@ -108,7 +108,7 @@ def test_tunnel_direction_change_survives_main_window_refresh(qtbot):
         0,
         CellShape.Rectangle_3x1,
         Direction.Up,
-        ItemColor.DarkBlue,
+        ItemColor.Blue,
         stored_cells=[BoxCellData(0, 0)],
     )
     window.level = PixelLevelData(
@@ -187,6 +187,7 @@ def test_palette_color_recolors_selected_box(qtbot):
     assert window.box_editor.selected_color == ItemColor.Green
     assert window.box_editor.selected_indices == {0}
     assert window.dirty
+    window._set_dirty(False)
     window.close()
 
 
@@ -446,16 +447,16 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
         grid_rows=3,
         grid_cols=3,
         grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300)],
-        pixel_grid=PixelGridData(4, 1, [7, 7, 7, 3]),
+        pixel_grid=PixelGridData(4, 1, [int(ItemColor.Red)] * 3 + [int(ItemColor.Green)]),
     )
 
     window._refresh_all()
 
     assert window.color_palette._buttons[ItemColor.Red].text() == ""
     assert window.color_palette._buttons[ItemColor.Green].text() == "+1"
-    assert window.color_palette._buttons[ItemColor.DarkBlue].text() == ""
+    assert window.color_palette._buttons[ItemColor.Blue].text() == ""
 
-    window.level.pixel_grid = PixelGridData(2, 1, [7, 7])
+    window.level.pixel_grid = PixelGridData(2, 1, [int(ItemColor.Red)] * 2)
     window._refresh_all()
 
     assert window.color_palette._buttons[ItemColor.Red].text() == "-1"
@@ -465,7 +466,7 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
 def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch):
     class DialogStub:
         source_color = ItemColor.Red
-        target_color = ItemColor.SkyBlue
+        target_color = ItemColor.Cyan
 
         def __init__(self, *args, **kwargs):
             pass
@@ -483,20 +484,24 @@ def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch
             BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300),
             BoxCellData(0, 1, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green, 301),
         ],
-        pixel_grid=PixelGridData(4, 1, [7, 3, 7, EMPTY_COLOR_ID]),
+        pixel_grid=PixelGridData(
+            4,
+            1,
+            [int(ItemColor.Red), int(ItemColor.Green), int(ItemColor.Red), EMPTY_COLOR_ID],
+        ),
     )
     window._refresh_all()
 
     window.replace_color_button.click()
 
-    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.SkyBlue, ItemColor.Green]
-    assert window.level.pixel_grid.color_ids == [8, 3, 8, EMPTY_COLOR_ID]
-    assert window.color_palette.selected_color == ItemColor.SkyBlue
+    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Cyan, ItemColor.Green]
+    assert window.level.pixel_grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID]
+    assert window.color_palette.selected_color == ItemColor.Cyan
     assert window.dirty
 
     window.commands.undo()
 
     assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Red, ItemColor.Green]
-    assert window.level.pixel_grid.color_ids == [7, 3, 7, EMPTY_COLOR_ID]
+    assert window.level.pixel_grid.color_ids == [0, 1, 0, EMPTY_COLOR_ID]
     window._set_dirty(False)
     window.close()

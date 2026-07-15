@@ -11,7 +11,7 @@ def make_level():
         grid_cols=3,
         level=1,
         grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red)],
-        pixel_grid=PixelGridData(3, 1, [7, 7, 7]),
+        pixel_grid=PixelGridData(3, 1, [int(ItemColor.Red)] * 3),
     )
 
 
@@ -22,17 +22,17 @@ def test_serializer_writes_unity_type_and_int_enums():
     assert cell["$type"] == CELL_TYPE_NAME
     assert cell["shape"] == 3
     assert cell["direction"] == 0
-    assert cell["colorList"] == [7]
+    assert cell["colorList"] == [0]
     assert cell["effects"] is None
     assert data["gridLanes"] == []
     assert data["obstacles"] == []
-    assert '"colorList": [7]' in content
+    assert '"colorList": [0]' in content
 
 
 def test_round_trip_preserves_core_data():
     data = json.loads(dumps_level(make_level()))
     loaded = level_from_dict(data)
-    assert loaded.pixel_grid.color_ids == [7, 7, 7]
+    assert loaded.pixel_grid.color_ids == [int(ItemColor.Red)] * 3
     assert loaded.grid_cells[0].shape == CellShape.Rectangle_3x1
 
 
@@ -121,7 +121,7 @@ def test_tunnel_cell_round_trip_preserves_color_direction_and_stored_cells():
     }
     tunnel = {
         "$type": TUNNEL_TYPE_NAME,
-        "color": int(ItemColor.DarkBlue),
+        "color": int(ItemColor.Blue),
         "storedCells": [stored],
         "gridX": 1,
         "gridY": 1,
@@ -136,7 +136,7 @@ def test_tunnel_cell_round_trip_preserves_color_direction_and_stored_cells():
     written = level_to_dict(loaded, assign_ids=False)["gridCells"][0]
 
     assert isinstance(loaded.grid_cells[0], TunnelCellData)
-    assert loaded.grid_cells[0].color == ItemColor.DarkBlue
+    assert loaded.grid_cells[0].color == ItemColor.Blue
     assert loaded.grid_cells[0].direction == Direction.Right
     assert loaded.grid_cells[0].stored_cells[0].effects == [FrozenCellEffectData(2)]
     assert written == tunnel
@@ -148,7 +148,7 @@ def test_tunnel_source_histogram_uses_stored_cell_colors():
         0,
         CellShape.Square_3x3,
         Direction.Up,
-        ItemColor.DarkBlue,
+        ItemColor.Blue,
         stored_cells=[
             BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
             BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green),

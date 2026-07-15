@@ -146,7 +146,7 @@ class ColorGateObstacleData:
     width: int = 1
     height: int = 1
     count: int = 1
-    required_color: ItemColor = ItemColor.DarkBlue
+    required_color: ItemColor = ItemColor.Blue
     id: int = 0
 
 

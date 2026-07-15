@@ -20,8 +20,13 @@ from pixel_level_tool.services.level_validator import LevelValidator
 
 def base_level() -> PixelLevelData:
     first = BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 300)
-    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.DarkBlue, 301)
-    return PixelLevelData(grid_rows=3, grid_cols=6, grid_cells=[first, second], pixel_grid=PixelGridData(6, 1, [7, 7, 7, 1, 1, 1]))
+    second = BoxCellData(3, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue, 301)
+    return PixelLevelData(
+        grid_rows=3,
+        grid_cols=6,
+        grid_cells=[first, second],
+        pixel_grid=PixelGridData(6, 1, [int(ItemColor.Red)] * 3 + [int(ItemColor.Blue)] * 3),
+    )
 
 
 def messages(level):
@@ -55,7 +60,11 @@ def test_gate_and_scissor_pairing_and_elevator_balance():
         WoolCrateObstacleData(0, 0, 3, 1, [WoolCrateColor.Blue]),
         ElevatorObstacleData(0, 0, 3, 1, [ElevatorLayerData([hidden])]),
     ]
-    level.pixel_grid = PixelGridData(9, 1, [7, 7, 7, 1, 1, 1, 3, 3, 3])
+    level.pixel_grid = PixelGridData(
+        9,
+        1,
+        [int(ItemColor.Red)] * 3 + [int(ItemColor.Blue)] * 3 + [int(ItemColor.Green)] * 3,
+    )
     result = LevelValidator().validate(level)
     assert result.is_valid
     assert sum(level.source_histogram().values()) == 9

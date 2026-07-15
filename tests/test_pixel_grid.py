@@ -11,8 +11,8 @@ def test_row_major_index_and_top_row():
 
 def test_paint_erase_resize_preserves_top_left():
     grid = PixelGridData(2, 2, [0, 1, 2, 3])
-    grid.set_color_id(0, 1, int(ItemColor.SkyBlue))
-    assert grid.get_color_id(0, 1) == int(ItemColor.SkyBlue)
+    grid.set_color_id(0, 1, int(ItemColor.Cyan))
+    assert grid.get_color_id(0, 1) == int(ItemColor.Cyan)
     grid.set_color_id(0, 1, EMPTY_COLOR_ID)
     assert grid.get_color_id(0, 1) == EMPTY_COLOR_ID
     grid.resize(3, 3)
@@ -71,7 +71,11 @@ def test_trim_empty_borders_leaves_fully_empty_grid_unchanged():
 
 
 def test_replace_color_changes_all_matching_pixels_only():
-    grid = PixelGridData(5, 1, [7, 1, 7, EMPTY_COLOR_ID, 2])
+    grid = PixelGridData(
+        5,
+        1,
+        [int(ItemColor.Red), int(ItemColor.Green), int(ItemColor.Red), EMPTY_COLOR_ID, int(ItemColor.Blue)],
+    )
 
-    assert grid.replace_color(ItemColor.Red, ItemColor.SkyBlue) == 2
-    assert grid.color_ids == [8, 1, 8, EMPTY_COLOR_ID, 2]
+    assert grid.replace_color(ItemColor.Red, ItemColor.Cyan) == 2
+    assert grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID, 2]
