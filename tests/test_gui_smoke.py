@@ -98,6 +98,49 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     window.close()
 
 
+def test_palette_color_recolors_selected_box(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = PixelLevelData(
+        grid_rows=3,
+        grid_cols=3,
+        grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red)],
+        pixel_grid=PixelGridData(3, 1),
+    )
+    window._refresh_all()
+    window.box_editor.selected_index = 0
+    window.box_editor.selected_indices = {0}
+
+    window.color_palette._buttons[ItemColor.Green].click()
+
+    assert window.level.grid_cells[0].color == ItemColor.Green
+    assert window.pixel_editor.selected_color == ItemColor.Green
+    assert window.box_editor.selected_color == ItemColor.Green
+    assert window.box_editor.selected_indices == {0}
+    assert window.dirty
+    window.close()
+
+
+def test_deselect_box_button_clears_selection(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = PixelLevelData(
+        grid_rows=3,
+        grid_cols=3,
+        grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red)],
+    )
+    window._refresh_all()
+    window.box_editor.selected_index = 0
+    window.box_editor.selected_indices = {0}
+
+    window.deselect_box_button.click()
+
+    assert window.box_editor.selected_index is None
+    assert window.box_editor.selected_indices == set()
+    assert window.box_inspector.selected_indices == []
+    window.close()
+
+
 def test_toolbar_tooltips_show_keyboard_shortcuts(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

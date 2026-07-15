@@ -117,6 +117,16 @@ class BoxGridEditor(QGraphicsView):
                     cell.color = old.color
                     cell.is_active = old.is_active
 
+    def clear_selection(self) -> None:
+        if self.selected_index is None and not self.selected_indices:
+            return
+        self.selected_index = None
+        self.selected_indices.clear()
+        self.scene.clearSelection()
+        self._reset_drag()
+        self.selection_changed.emit([])
+        self.refresh()
+
     def refresh(self) -> None:
         self.scene.clear()
         if self.level is None:
@@ -494,6 +504,10 @@ class BoxGridEditor(QGraphicsView):
             self.setDragMode(QGraphicsView.ScrollHandDrag)
             super().mousePressEvent(event)
             return
+        if event.button() == Qt.RightButton:
+            self.clear_selection()
+            event.accept()
+            return
         col, row = self._scene_cell_from_event(event)
         clicked_index = self._box_index_at(event.position().toPoint())
         if event.button() == Qt.LeftButton and clicked_index is not None:
@@ -574,6 +588,10 @@ class BoxGridEditor(QGraphicsView):
             super().wheelEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.clear_selection()
+            event.accept()
+            return
         if self.level is not None and self.selected_index is not None:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 before = self.level.clone()

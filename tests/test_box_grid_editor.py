@@ -102,6 +102,28 @@ def test_selected_outline_stays_above_box_and_obstacle_layers(qtbot):
     assert editor._box_index_at(editor.mapFromScene(QPointF(1.5 * CELL, 4.5 * CELL))) == 0
 
 
+def test_escape_clears_box_selection(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+    editor.set_level(
+        PixelLevelData(
+            grid_rows=3,
+            grid_cols=3,
+            grid_cells=[BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red)],
+        )
+    )
+    editor.selected_index = 0
+    editor.selected_indices = {0}
+    selections = []
+    editor.selection_changed.connect(selections.append)
+
+    qtbot.keyClick(editor, Qt.Key_Escape)
+
+    assert editor.selected_index is None
+    assert editor.selected_indices == set()
+    assert selections == [[]]
+
+
 def test_box_grid_displays_model_row_zero_at_the_bottom(qtbot):
     editor = BoxGridEditor()
     qtbot.addWidget(editor)
