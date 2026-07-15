@@ -115,6 +115,8 @@ and are shown on the Box Grid with a direction-aware tunnel icon and stored-box 
 to view its color-coded `storedCells` in JSON order and edit each stored box from **Box Inspector**.
 To create one, choose **Tunnel** in the **Type** field above the Box Grid, then click an empty grid cell.
 New tunnels start with one stored box using the selected shape, direction, color, and active state.
+The **Box Inspector** also changes an existing tunnel's direction and can add, delete, or reorder its
+stored boxes. At least one stored box is always retained so the tunnel remains valid.
 
 Supported source-grid obstacles are LinkedContainer, LargeBlockObstacle, Pins, LockedGate,
 WoolCrate, ColorGate, and Elevator. Ctrl-click boxes to create target-based or area obstacles from

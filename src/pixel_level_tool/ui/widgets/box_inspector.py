@@ -192,12 +192,35 @@ class BoxInspector(QWidget):
         self.stored_panel = QWidget()
         stored_layout = QVBoxLayout(self.stored_panel)
         stored_layout.setContentsMargins(0, 0, 0, 0)
+        tunnel_form = QFormLayout()
+        self.tunnel_direction = QComboBox()
+        for direction in Direction:
+            self.tunnel_direction.addItem(f"{int(direction)}  {direction.name}", int(direction))
+        tunnel_form.addRow("Tunnel direction", self.tunnel_direction)
+        stored_layout.addLayout(tunnel_form)
+        self.tunnel_status = QLabel()
+        self.tunnel_status.setWordWrap(True)
+        stored_layout.addWidget(self.tunnel_status)
         self.stored_label = QLabel("Stored boxes (JSON order)")
         stored_layout.addWidget(self.stored_label)
         self.stored_cells = QListWidget()
         self.stored_cells.setIconSize(QSize(18, 18))
         self.stored_cells.setAlternatingRowColors(True)
         stored_layout.addWidget(self.stored_cells)
+        stored_actions = QHBoxLayout()
+        self.stored_add_button = QPushButton("Add Box")
+        self.stored_remove_button = QPushButton("Delete Box")
+        self.stored_up_button = QPushButton("Move Up")
+        self.stored_down_button = QPushButton("Move Down")
+        self.stored_remove_button.setToolTip("A tunnel must keep at least one stored box")
+        for button in (
+            self.stored_add_button,
+            self.stored_remove_button,
+            self.stored_up_button,
+            self.stored_down_button,
+        ):
+            stored_actions.addWidget(button)
+        stored_layout.addLayout(stored_actions)
         stored_form = QFormLayout()
         self.stored_x = QSpinBox()
         self.stored_y = QSpinBox()
@@ -244,8 +267,13 @@ class BoxInspector(QWidget):
         self.remove_button.clicked.connect(self._remove)
         self.edit_button.clicked.connect(self._edit)
         self.effects.itemDoubleClicked.connect(lambda _: self._edit())
+        self.tunnel_direction.currentIndexChanged.connect(self._apply_tunnel_direction)
         self.stored_cells.currentRowChanged.connect(self._show_stored)
         self.stored_cells.itemDoubleClicked.connect(lambda _: self.stored_effects_button.click())
+        self.stored_add_button.clicked.connect(self._add_stored)
+        self.stored_remove_button.clicked.connect(self._remove_stored)
+        self.stored_up_button.clicked.connect(lambda: self._move_stored(-1))
+        self.stored_down_button.clicked.connect(lambda: self._move_stored(1))
         self.stored_x.editingFinished.connect(self._apply_stored)
         self.stored_y.editingFinished.connect(self._apply_stored)
         self.stored_shape.currentIndexChanged.connect(self._apply_stored)
@@ -268,6 +296,7 @@ class BoxInspector(QWidget):
 
     def _refresh(self) -> None:
         cell = self._cell()
+        self.tunnel_status.clear()
         self.effects.clear()
         stored_row = self.stored_cells.currentRow()
         self._updating_stored = True
@@ -275,6 +304,7 @@ class BoxInspector(QWidget):
         if cell is None:
             self.title.setText("Select one box")
         elif isinstance(cell, TunnelCellData):
+            self.tunnel_direction.setCurrentIndex(self.tunnel_direction.findData(int(cell.direction)))
             self.title.setText(f"Tunnel {cell.id or self.selected_indices[0]} at ({cell.grid_x}, {cell.grid_y}) — {len(cell.stored_cells)} stored")
             for index, stored in enumerate(cell.stored_cells):
                 effects = ", ".join(_effect_name(effect) for effect in stored.effects or [])
@@ -329,6 +359,12 @@ class BoxInspector(QWidget):
         )
         for control in controls:
             control.setEnabled(stored is not None)
+        tunnel = self._cell()
+        count = len(tunnel.stored_cells) if isinstance(tunnel, TunnelCellData) else 0
+        self.stored_add_button.setEnabled(isinstance(tunnel, TunnelCellData))
+        self.stored_remove_button.setEnabled(stored is not None and count > 1)
+        self.stored_up_button.setEnabled(stored is not None and row > 0)
+        self.stored_down_button.setEnabled(stored is not None and row < count - 1)
         if stored is not None:
             self.stored_x.setValue(stored.grid_x)
             self.stored_y.setValue(stored.grid_y)
@@ -337,6 +373,79 @@ class BoxInspector(QWidget):
             self.stored_color.setCurrentIndex(self.stored_color.findData(int(stored.color)))
             self.stored_active.setChecked(stored.is_active)
         self._updating_stored = False
+
+    def _apply_tunnel_direction(self) -> None:
+        if self._updating_stored or self.level is None:
+            return
+        tunnel = self._cell()
+        if not isinstance(tunnel, TunnelCellData):
+            return
+        direction = Direction(self.tunnel_direction.currentData())
+        if tunnel.direction == direction:
+            return
+        before = self.level.clone()
+        previous = tunnel.direction
+        tunnel.direction = direction
+        index = self.selected_indices[0]
+        if not self.level.can_place(tunnel, ignore_index=index):
+            tunnel.direction = previous
+            self.tunnel_direction.blockSignals(True)
+            self.tunnel_direction.setCurrentIndex(self.tunnel_direction.findData(int(previous)))
+            self.tunnel_direction.blockSignals(False)
+            self.tunnel_status.setText("Cannot rotate tunnel: it would leave the grid or overlap another box.")
+            return
+        self.tunnel_status.clear()
+        self.model_changed.emit("Change tunnel direction", before)
+
+    def _add_stored(self) -> None:
+        if self.level is None:
+            return
+        tunnel = self._cell()
+        if not isinstance(tunnel, TunnelCellData):
+            return
+        before = self.level.clone()
+        stored = BoxCellData(
+            grid_x=0,
+            grid_y=0,
+            shape=tunnel.shape,
+            direction=tunnel.direction,
+            color=tunnel.color,
+            is_active=tunnel.is_active,
+        )
+        tunnel.stored_cells.append(stored)
+        self._refresh()
+        self.stored_cells.setCurrentRow(len(tunnel.stored_cells) - 1)
+        self.model_changed.emit("Add tunnel stored box", before)
+
+    def _remove_stored(self) -> None:
+        if self.level is None:
+            return
+        tunnel = self._cell()
+        row = self.stored_cells.currentRow()
+        if not isinstance(tunnel, TunnelCellData) or len(tunnel.stored_cells) <= 1 or row < 0:
+            return
+        before = self.level.clone()
+        tunnel.stored_cells.pop(row)
+        self._refresh()
+        self.stored_cells.setCurrentRow(min(row, len(tunnel.stored_cells) - 1))
+        self.model_changed.emit("Delete tunnel stored box", before)
+
+    def _move_stored(self, offset: int) -> None:
+        if self.level is None:
+            return
+        tunnel = self._cell()
+        row = self.stored_cells.currentRow()
+        target = row + offset
+        if not isinstance(tunnel, TunnelCellData) or row < 0 or not 0 <= target < len(tunnel.stored_cells):
+            return
+        before = self.level.clone()
+        tunnel.stored_cells[row], tunnel.stored_cells[target] = (
+            tunnel.stored_cells[target],
+            tunnel.stored_cells[row],
+        )
+        self._refresh()
+        self.stored_cells.setCurrentRow(target)
+        self.model_changed.emit("Reorder tunnel stored boxes", before)
 
     def _apply_stored(self) -> None:
         if self._updating_stored or self.level is None:

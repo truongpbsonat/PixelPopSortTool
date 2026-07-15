@@ -97,12 +97,16 @@ class BoxGridEditor(QGraphicsView):
         color: ItemColor,
         is_active: bool,
         is_tunnel: bool = False,
+        *,
+        apply_to_selection: bool = True,
     ) -> None:
         self.selected_shape = shape
         self.selected_direction = direction
         self.selected_color = color
         self.selected_active = is_active
         self.selected_is_tunnel = is_tunnel
+        if not apply_to_selection:
+            return
         if self.level is not None and self.selected_index is not None and self.selected_index < len(self.level.grid_cells):
             cell = self.level.grid_cells[self.selected_index]
             if (

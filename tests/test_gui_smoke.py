@@ -2,12 +2,14 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QDialog
 
 from pixel_level_tool.domain.enums import CellShape, Direction, EMPTY_COLOR_ID, ItemColor
-from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
+from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData, TunnelCellData
 from pixel_level_tool.services.level_serializer import save_level
 from pixel_level_tool.ui.main_window import MainWindow
+from pixel_level_tool.ui.widgets.box_grid_editor import CELL
 
 
 def _valid_level(level_number: int, category: int = 0) -> PixelLevelData:
@@ -94,6 +96,73 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     assert window.level.pixel_grid.color_ids == [0, 1, EMPTY_COLOR_ID, 2, 3, EMPTY_COLOR_ID]
     assert window.pixel_editor.scene.sceneRect().width() == 72
     assert window.pixel_editor.scene.sceneRect().height() == 48
+    window._set_dirty(False)
+    window.close()
+
+
+def test_tunnel_direction_change_survives_main_window_refresh(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    tunnel = TunnelCellData(
+        0,
+        0,
+        CellShape.Rectangle_3x1,
+        Direction.Up,
+        ItemColor.DarkBlue,
+        stored_cells=[BoxCellData(0, 0)],
+    )
+    window.level = PixelLevelData(
+        grid_rows=4,
+        grid_cols=4,
+        grid_cells=[tunnel],
+        pixel_grid=PixelGridData(3, 1),
+    )
+    window._refresh_all()
+    window.box_editor.selected_index = 0
+    window.box_editor.selected_indices = {0}
+    window._box_selection_changed([0])
+
+    window.box_inspector.tunnel_direction.setCurrentIndex(
+        window.box_inspector.tunnel_direction.findData(int(Direction.Right))
+    )
+
+    assert window.level.grid_cells[0].direction == Direction.Right
+    assert window.box_inspector.tunnel_direction.currentData() == int(Direction.Right)
+
+    window.commands.undo()
+
+    assert window.level.grid_cells[0].direction == Direction.Up
+    window._set_dirty(False)
+    window.close()
+
+
+def test_switching_from_normal_creates_tunnel_on_first_grid_click(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    normal = BoxCellData(0, 0, CellShape.Square_3x3, Direction.Up, ItemColor.Red)
+    window.level = PixelLevelData(
+        grid_rows=6,
+        grid_cols=8,
+        grid_cells=[normal],
+        pixel_grid=PixelGridData(3, 1),
+    )
+    window._refresh_all()
+    window.show()
+    qtbot.waitExposed(window)
+    window.box_editor.selected_index = 0
+    window.box_editor.selected_indices = {0}
+    window._box_selection_changed([0])
+
+    window.shape_palette.cell_type_combo.setCurrentText("Tunnel")
+
+    assert window.shape_palette.is_tunnel
+    assert window.box_editor.selected_is_tunnel
+
+    first_empty_cell = window.box_editor.mapFromScene(QPointF(4.5 * CELL, 5.5 * CELL))
+    qtbot.mouseClick(window.box_editor.viewport(), Qt.LeftButton, pos=first_empty_cell)
+
+    assert len(window.level.grid_cells) == 2
+    assert isinstance(window.level.grid_cells[1], TunnelCellData)
     window._set_dirty(False)
     window.close()
 

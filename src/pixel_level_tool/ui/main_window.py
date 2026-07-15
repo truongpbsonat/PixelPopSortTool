@@ -417,7 +417,14 @@ class MainWindow(QMainWindow):
         ):
             widget.blockSignals(False)
         self.box_editor.set_level(self.level)
-        self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, self.color_palette.selected_color, self.shape_palette.is_active, self.shape_palette.is_tunnel)
+        self.box_editor.set_tool(
+            self.shape_palette.shape,
+            self.shape_palette.direction,
+            self.color_palette.selected_color,
+            self.shape_palette.is_active,
+            self.shape_palette.is_tunnel,
+            apply_to_selection=False,
+        )
         selected = sorted(self.box_editor.selected_indices)
         self.box_inspector.set_context(self.level, selected)
         self.obstacles_panel.set_context(self.level, selected)

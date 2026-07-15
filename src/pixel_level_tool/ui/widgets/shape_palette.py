@@ -27,10 +27,10 @@ class ShapePalette(QWidget):
         layout.addRow("Shape", self.shape_combo)
         layout.addRow("Direction", self.direction_combo)
         layout.addRow("Active", self.active_check)
-        self.cell_type_combo.currentIndexChanged.connect(self.shape_changed.emit)
-        self.shape_combo.currentIndexChanged.connect(self.shape_changed.emit)
-        self.direction_combo.currentIndexChanged.connect(self.shape_changed.emit)
-        self.active_check.toggled.connect(self.shape_changed.emit)
+        self.cell_type_combo.currentIndexChanged.connect(lambda _index: self.shape_changed.emit())
+        self.shape_combo.currentIndexChanged.connect(lambda _index: self.shape_changed.emit())
+        self.direction_combo.currentIndexChanged.connect(lambda _index: self.shape_changed.emit())
+        self.active_check.toggled.connect(lambda _checked: self.shape_changed.emit())
 
     @property
     def shape(self) -> CellShape:

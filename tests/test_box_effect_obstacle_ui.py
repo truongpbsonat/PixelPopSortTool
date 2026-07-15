@@ -84,6 +84,100 @@ def test_tunnel_stored_boxes_keep_json_order_and_are_editable(qtbot):
     assert changes[0][1].grid_cells[0].stored_cells[1].color == ItemColor.SkyBlue
 
 
+def test_tunnel_stored_boxes_can_be_added_deleted_and_reordered(qtbot):
+    tunnel = TunnelCellData(
+        0,
+        0,
+        CellShape.Square_3x3,
+        Direction.Up,
+        ItemColor.DarkBlue,
+        stored_cells=[
+            BoxCellData(0, 0, color=ItemColor.Red),
+            BoxCellData(0, 0, color=ItemColor.Green),
+        ],
+    )
+    level = PixelLevelData(grid_rows=5, grid_cols=5, grid_cells=[tunnel])
+    inspector = BoxInspector()
+    qtbot.addWidget(inspector)
+    inspector.set_context(level, [0])
+    changes = []
+    inspector.model_changed.connect(lambda label, before: changes.append((label, before)))
+
+    qtbot.mouseClick(inspector.stored_add_button, Qt.LeftButton)
+
+    assert len(tunnel.stored_cells) == 3
+    assert tunnel.stored_cells[2].shape == tunnel.shape
+    assert tunnel.stored_cells[2].direction == tunnel.direction
+    assert tunnel.stored_cells[2].color == tunnel.color
+    assert inspector.stored_cells.currentRow() == 2
+
+    inspector.stored_cells.setCurrentRow(1)
+    qtbot.mouseClick(inspector.stored_up_button, Qt.LeftButton)
+
+    assert [cell.color for cell in tunnel.stored_cells] == [ItemColor.Green, ItemColor.Red, ItemColor.DarkBlue]
+    assert inspector.stored_cells.currentRow() == 0
+
+    qtbot.mouseClick(inspector.stored_remove_button, Qt.LeftButton)
+
+    assert [cell.color for cell in tunnel.stored_cells] == [ItemColor.Red, ItemColor.DarkBlue]
+    assert [label for label, _ in changes] == [
+        "Add tunnel stored box",
+        "Reorder tunnel stored boxes",
+        "Delete tunnel stored box",
+    ]
+
+    qtbot.mouseClick(inspector.stored_remove_button, Qt.LeftButton)
+    assert len(tunnel.stored_cells) == 1
+    assert not inspector.stored_remove_button.isEnabled()
+
+
+def test_existing_tunnel_direction_can_be_changed_when_placement_is_valid(qtbot):
+    tunnel = TunnelCellData(
+        0,
+        0,
+        CellShape.Rectangle_3x1,
+        Direction.Up,
+        ItemColor.DarkBlue,
+        stored_cells=[BoxCellData(0, 0)],
+    )
+    level = PixelLevelData(grid_rows=4, grid_cols=4, grid_cells=[tunnel])
+    inspector = BoxInspector()
+    qtbot.addWidget(inspector)
+    inspector.set_context(level, [0])
+    changes = []
+    inspector.model_changed.connect(lambda label, before: changes.append((label, before)))
+
+    inspector.tunnel_direction.setCurrentIndex(inspector.tunnel_direction.findData(int(Direction.Right)))
+
+    assert tunnel.direction == Direction.Right
+    assert changes[0][0] == "Change tunnel direction"
+    assert changes[0][1].grid_cells[0].direction == Direction.Up
+
+
+def test_tunnel_direction_rejects_out_of_bounds_rotation(qtbot):
+    tunnel = TunnelCellData(
+        0,
+        0,
+        CellShape.Rectangle_3x1,
+        Direction.Up,
+        ItemColor.DarkBlue,
+        stored_cells=[BoxCellData(0, 0)],
+    )
+    level = PixelLevelData(grid_rows=2, grid_cols=3, grid_cells=[tunnel])
+    inspector = BoxInspector()
+    qtbot.addWidget(inspector)
+    inspector.set_context(level, [0])
+    changes = []
+    inspector.model_changed.connect(lambda label, before: changes.append(label))
+
+    inspector.tunnel_direction.setCurrentIndex(inspector.tunnel_direction.findData(int(Direction.Right)))
+
+    assert tunnel.direction == Direction.Up
+    assert inspector.tunnel_direction.currentData() == int(Direction.Up)
+    assert "Cannot rotate tunnel" in inspector.tunnel_status.text()
+    assert changes == []
+
+
 def test_obstacle_panel_creates_linked_container_from_selection(qtbot):
     level = make_level(); panel = ObstaclesPanel(); qtbot.addWidget(panel); panel.set_context(level, [0, 1])
     changes = []; panel.model_changed.connect(lambda label, before: changes.append(label))
