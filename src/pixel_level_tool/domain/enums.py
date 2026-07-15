@@ -43,6 +43,44 @@ class Direction(IntEnum):
     Right = 3
 
 
+class LockKeyGate(IntEnum):
+    None_ = 0
+    Red = 1
+    Blue = 2
+    Green = 3
+    Yellow = 4
+    Purple = 5
+    Pink = 6
+
+
+class WoolCrateColor(IntEnum):
+    None_ = 0
+    Red = 1
+    Blue = 2
+    Green = 3
+    Yellow = 4
+    Purple = 5
+    Pink = 6
+
+
+class CellEffectType(IntEnum):
+    Frozen = 1
+    Hidden = 2
+    ArrowLock = 3
+    KeyForLockedGate = 5
+    ScissorForWoolCrate = 6
+
+
+class ObstacleType(IntEnum):
+    LinkedContainer = 1
+    LargeBlock = 3
+    Pins = 4
+    LockedGate = 5
+    WoolCrate = 6
+    ColorGate = 7
+    Elevator = 8
+
+
 class GameMode(IntEnum):
     Pixel = 1
 
@@ -84,4 +122,3 @@ def nearest_item_color(rgb: tuple[int, int, int]) -> ItemColor:
         + (COLOR_RGB[color][1] - g) ** 2
         + (COLOR_RGB[color][2] - b) ** 2,
     )
-

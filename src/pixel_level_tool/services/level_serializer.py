@@ -7,11 +7,46 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from pixel_level_tool.domain.enums import CellShape, Direction, ItemColor
-from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
+from pixel_level_tool.domain.enums import CellShape, Direction, ItemColor, LockKeyGate, WoolCrateColor
+from pixel_level_tool.domain.level_models import (
+    ArrowLockCellEffectData,
+    BoxCellData,
+    ColorGateObstacleData,
+    ElevatorLayerData,
+    ElevatorObstacleData,
+    FrozenCellEffectData,
+    HiddenCellEffectData,
+    KeyForLockedGateCellEffectData,
+    LargeBlockObstacleData,
+    LinkedContainerObstacleData,
+    LockedGateObstacleData,
+    PinsObstacleData,
+    PixelGridData,
+    PixelLevelData,
+    ScissorForWoolCrateCellEffectData,
+    TunnelCellData,
+    WoolCrateObstacleData,
+)
 
 
 CELL_TYPE_NAME = "NewRefactor.CellData, Assembly-CSharp"
+TUNNEL_TYPE_NAME = "NewRefactor.TunnelData, Assembly-CSharp"
+EFFECT_TYPE_NAMES = {
+    FrozenCellEffectData: "NewRefactor.FrozenCellEffectData, Assembly-CSharp",
+    HiddenCellEffectData: "NewRefactor.HiddenCellEffectData, Assembly-CSharp",
+    ArrowLockCellEffectData: "NewRefactor.ArrowLockCellEffectData, Assembly-CSharp",
+    KeyForLockedGateCellEffectData: "NewRefactor.KeyForLockedGateCellEffectData, Assembly-CSharp",
+    ScissorForWoolCrateCellEffectData: "NewRefactor.ScissorForWoolCrateCellEffectData, Assembly-CSharp",
+}
+OBSTACLE_TYPE_NAMES = {
+    LinkedContainerObstacleData: "NewRefactor.LinkedContainerObstacleData, Assembly-CSharp",
+    LargeBlockObstacleData: "NewRefactor.LargeBlockObstacleData, Assembly-CSharp",
+    PinsObstacleData: "NewRefactor.PinsObstacleData, Assembly-CSharp",
+    LockedGateObstacleData: "NewRefactor.LockedGateObstacleData, Assembly-CSharp",
+    WoolCrateObstacleData: "NewRefactor.WoolCrateObstacleData, Assembly-CSharp",
+    ColorGateObstacleData: "NewRefactor.ColorGateObstacleData, Assembly-CSharp",
+    ElevatorObstacleData: "NewRefactor.ElevatorObstacleData, Assembly-CSharp",
+}
 ROOT_KEYS = {
     "pixelGrid",
     "levelGridVersion",
@@ -40,11 +75,24 @@ class UnsupportedScopeError(LevelSerializationError):
     pass
 
 
+def effect_to_dict(effect: object) -> dict[str, Any]:
+    type_name = EFFECT_TYPE_NAMES.get(type(effect))
+    if type_name is None:
+        raise UnsupportedScopeError(f"Unsupported cell effect: {type(effect).__name__}")
+    data: dict[str, Any] = {"$type": type_name}
+    if isinstance(effect, FrozenCellEffectData):
+        data["frozenCount"] = effect.frozen_count
+    elif isinstance(effect, ArrowLockCellEffectData):
+        data["requiredDirection"] = int(effect.required_direction)
+    elif isinstance(effect, KeyForLockedGateCellEffectData):
+        data["lockKeyGate"] = int(effect.lock_key_gate)
+    elif isinstance(effect, ScissorForWoolCrateCellEffectData):
+        data["scissorColor"] = int(effect.scissor_color)
+    return data
+
+
 def cell_to_dict(cell: BoxCellData) -> dict[str, Any]:
-    return {
-        "$type": CELL_TYPE_NAME,
-        "colorList": [int(cell.color)],
-        "effects": cell.effects,
+    common = {
         "gridX": cell.grid_x,
         "gridY": cell.grid_y,
         "shape": int(cell.shape),
@@ -52,12 +100,66 @@ def cell_to_dict(cell: BoxCellData) -> dict[str, Any]:
         "id": cell.id,
         "isActive": cell.is_active,
     }
+    if isinstance(cell, TunnelCellData):
+        return {
+            "$type": TUNNEL_TYPE_NAME,
+            "color": int(cell.color),
+            "storedCells": [cell_to_dict(stored_cell) for stored_cell in cell.stored_cells],
+            **common,
+        }
+    if type(cell) is not BoxCellData:
+        raise UnsupportedScopeError(f"Unsupported grid cell subtype: {type(cell).__name__}")
+    return {
+        "$type": CELL_TYPE_NAME,
+        "colorList": [int(cell.color)],
+        "effects": [effect_to_dict(effect) for effect in cell.effects] if cell.effects else None,
+        **common,
+    }
+
+
+def obstacle_to_dict(obstacle: object, uid_to_id: dict[str, int]) -> dict[str, Any]:
+    type_name = OBSTACLE_TYPE_NAMES.get(type(obstacle))
+    if type_name is None:
+        raise UnsupportedScopeError(f"Unsupported source-grid obstacle: {type(obstacle).__name__}")
+    data: dict[str, Any] = {"$type": type_name}
+    if isinstance(obstacle, (LinkedContainerObstacleData, PinsObstacleData)):
+        try:
+            data["targetIds"] = [uid_to_id[uid] for uid in obstacle.target_uids]
+        except KeyError as exc:
+            raise LevelSerializationError(f"Obstacle references a deleted box ({exc.args[0]}).") from exc
+        if isinstance(obstacle, PinsObstacleData):
+            data["requiredDirection"] = int(obstacle.required_direction)
+    elif isinstance(obstacle, (LargeBlockObstacleData, LockedGateObstacleData, WoolCrateObstacleData, ColorGateObstacleData, ElevatorObstacleData)):
+        if isinstance(obstacle, LargeBlockObstacleData):
+            data["count"] = obstacle.count
+        elif isinstance(obstacle, LockedGateObstacleData):
+            data["lockKeyGate"] = int(obstacle.lock_key_gate)
+            data["priority"] = obstacle.priority
+        elif isinstance(obstacle, WoolCrateObstacleData):
+            data["ropes"] = [int(color) for color in obstacle.ropes]
+            data["priority"] = obstacle.priority
+        elif isinstance(obstacle, ColorGateObstacleData):
+            data["count"] = obstacle.count
+            data["requiredColor"] = int(obstacle.required_color)
+        elif isinstance(obstacle, ElevatorObstacleData):
+            data["layers"] = [{"cells": [cell_to_dict(cell) for cell in layer.cells]} for layer in obstacle.layers]
+        data.update({
+            "gridX": obstacle.grid_x,
+            "gridY": obstacle.grid_y,
+            "width": obstacle.width,
+            "height": obstacle.height,
+        })
+    data["id"] = obstacle.id
+    return data
 
 
 def level_to_dict(level: PixelLevelData, *, assign_ids: bool = True) -> dict[str, Any]:
     snapshot = level.clone()
     if assign_ids:
         snapshot.assign_deterministic_ids()
+    uid_to_id = {cell.internal_uid: cell.id for cell in snapshot.grid_cells}
+    if len(uid_to_id) != len(snapshot.grid_cells):
+        raise LevelSerializationError("Duplicate internal box identities cannot be serialized.")
     data: dict[str, Any] = dict(snapshot.extra_fields)
     data.update(
         {
@@ -75,8 +177,10 @@ def level_to_dict(level: PixelLevelData, *, assign_ids: bool = True) -> dict[str
             "gridCols": snapshot.grid_cols,
             "board": snapshot.board,
             "gridCells": [cell_to_dict(cell) for cell in snapshot.grid_cells],
-            "gridLanes": [],
-            "obstacles": list(snapshot.obstacles),
+            # Cargo lanes are not edited by this tool, but must survive a
+            # load/save round trip unchanged.
+            "gridLanes": snapshot.grid_lanes,
+            "obstacles": [obstacle_to_dict(obstacle, uid_to_id) for obstacle in snapshot.obstacles],
             "gameMode": snapshot.game_mode,
             "difficulty": snapshot.difficulty,
             "level": snapshot.level,
@@ -93,26 +197,107 @@ def _require_int_enum(enum_type: type, value: object, field: str) -> Any:
         raise LevelSerializationError(f"Invalid {field}: {value!r}") from exc
 
 
+def effect_from_dict(data: dict[str, Any]) -> object:
+    type_name = data.get("$type")
+    if type_name == EFFECT_TYPE_NAMES[FrozenCellEffectData]:
+        return FrozenCellEffectData(int(data.get("frozenCount", 0)))
+    if type_name == EFFECT_TYPE_NAMES[HiddenCellEffectData]:
+        return HiddenCellEffectData()
+    if type_name == EFFECT_TYPE_NAMES[ArrowLockCellEffectData]:
+        return ArrowLockCellEffectData(_require_int_enum(Direction, data.get("requiredDirection", 0), "requiredDirection"))
+    if type_name == EFFECT_TYPE_NAMES[KeyForLockedGateCellEffectData]:
+        return KeyForLockedGateCellEffectData(_require_int_enum(LockKeyGate, data.get("lockKeyGate", 0), "lockKeyGate"))
+    if type_name == EFFECT_TYPE_NAMES[ScissorForWoolCrateCellEffectData]:
+        return ScissorForWoolCrateCellEffectData(_require_int_enum(WoolCrateColor, data.get("scissorColor", 0), "scissorColor"))
+    if type_name == "NewRefactor.KeyForCargoCellEffectData, Assembly-CSharp":
+        raise UnsupportedScopeError("KeyForCargo is cargo-related and is not supported by this tool.")
+    raise UnsupportedScopeError(f"Unsupported cell effect type: {type_name!r}")
+
+
 def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
     type_name = data.get("$type")
+    common = {
+        "grid_x": int(data.get("gridX", 0)),
+        "grid_y": int(data.get("gridY", 0)),
+        "shape": _require_int_enum(CellShape, data.get("shape", 0), "shape"),
+        "direction": _require_int_enum(Direction, data.get("direction", 0), "direction"),
+        "id": int(data.get("id", 0)),
+        "is_active": bool(data.get("isActive", True)),
+    }
+    if type_name == TUNNEL_TYPE_NAME:
+        stored_data = data.get("storedCells")
+        if stored_data is None:
+            stored_data = []
+        if not isinstance(stored_data, list):
+            raise LevelSerializationError("Tunnel storedCells must be a JSON array or null.")
+        stored_cells = [cell_from_dict(item) for item in stored_data]
+        if any(type(cell) is not BoxCellData for cell in stored_cells):
+            raise UnsupportedScopeError("Tunnel storedCells currently support normal CellData only.")
+        return TunnelCellData(
+            **common,
+            color=_require_int_enum(ItemColor, data.get("color", int(ItemColor.Blue)), "color"),
+            stored_cells=stored_cells,
+        )
     if type_name != CELL_TYPE_NAME:
         raise UnsupportedScopeError(f"Unsupported grid cell type: {type_name!r}")
     colors = data.get("colorList")
     if not isinstance(colors, list) or len(colors) != 1:
         raise UnsupportedScopeError("Pixel-only cells must contain exactly one color in colorList.")
+    effects_data = data.get("effects")
+    if effects_data is not None and not isinstance(effects_data, list):
+        raise LevelSerializationError("Cell effects must be a JSON array or null.")
     return BoxCellData(
-        grid_x=int(data.get("gridX", 0)),
-        grid_y=int(data.get("gridY", 0)),
-        shape=_require_int_enum(CellShape, data.get("shape", 0), "shape"),
-        direction=_require_int_enum(Direction, data.get("direction", 0), "direction"),
+        **common,
         color=_require_int_enum(ItemColor, colors[0], "colorList[0]"),
-        id=int(data.get("id", 0)),
-        is_active=bool(data.get("isActive", True)),
-        effects=data.get("effects"),
+        effects=[effect_from_dict(effect) for effect in effects_data] if effects_data else None,
     )
 
 
+def obstacle_from_dict(data: dict[str, Any], id_to_uid: dict[int, str]) -> object:
+    type_name = data.get("$type")
+    obstacle_id = int(data.get("id", 0))
+
+    def target_uids() -> list[str]:
+        result: list[str] = []
+        for value in data.get("targetIds") or []:
+            target_id = int(value)
+            if target_id not in id_to_uid:
+                raise LevelSerializationError(f"Obstacle {obstacle_id} references missing box id {target_id}.")
+            result.append(id_to_uid[target_id])
+        return result
+
+    common = {
+        "grid_x": int(data.get("gridX", 0)),
+        "grid_y": int(data.get("gridY", 0)),
+        "width": int(data.get("width", 1)),
+        "height": int(data.get("height", 1)),
+    }
+    if type_name == OBSTACLE_TYPE_NAMES[LinkedContainerObstacleData]:
+        return LinkedContainerObstacleData(target_uids(), obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[PinsObstacleData]:
+        return PinsObstacleData(target_uids(), _require_int_enum(Direction, data.get("requiredDirection", 0), "requiredDirection"), obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[LargeBlockObstacleData]:
+        return LargeBlockObstacleData(**common, count=int(data.get("count", 1)), id=obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[LockedGateObstacleData]:
+        return LockedGateObstacleData(**common, lock_key_gate=_require_int_enum(LockKeyGate, data.get("lockKeyGate", 0), "lockKeyGate"), priority=int(data.get("priority", 0)), id=obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[WoolCrateObstacleData]:
+        ropes = [_require_int_enum(WoolCrateColor, value, "ropes") for value in data.get("ropes") or []]
+        return WoolCrateObstacleData(**common, ropes=ropes, priority=int(data.get("priority", 0)), id=obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[ColorGateObstacleData]:
+        return ColorGateObstacleData(**common, count=int(data.get("count", 1)), required_color=_require_int_enum(ItemColor, data.get("requiredColor", 0), "requiredColor"), id=obstacle_id)
+    if type_name == OBSTACLE_TYPE_NAMES[ElevatorObstacleData]:
+        layers = []
+        for layer_data in data.get("layers") or []:
+            layers.append(ElevatorLayerData([cell_from_dict(cell) for cell in layer_data.get("cells") or []]))
+        return ElevatorObstacleData(**common, layers=layers, id=obstacle_id)
+    if type_name == "NewRefactor.LinkedCargoObstacleData, Assembly-CSharp":
+        raise UnsupportedScopeError("LinkedCargo is cargo-related and is not supported by this tool.")
+    raise UnsupportedScopeError(f"Unsupported source-grid obstacle type: {type_name!r}")
+
+
 def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
+    if "$type" in data:
+        raise LevelSerializationError("Root $type discriminators are not supported.")
     try:
         level_grid_version = int(data.get("levelGridVersion", 1))
     except (TypeError, ValueError) as exc:
@@ -132,6 +317,16 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
         )
     else:
         pixel_grid = PixelGridData()
+    grid_lanes = data.get("gridLanes")
+    if grid_lanes is None:
+        grid_lanes = []
+    elif not isinstance(grid_lanes, list):
+        raise LevelSerializationError("gridLanes must be a JSON array or null.")
+    cells = [cell_from_dict(cell) for cell in data.get("gridCells", [])]
+    id_to_uid = {cell.id: cell.internal_uid for cell in cells if cell.id > 0}
+    if len(id_to_uid) != sum(cell.id > 0 for cell in cells):
+        raise LevelSerializationError("Duplicate positive box ids cannot be used by obstacle targetIds.")
+    obstacles = [obstacle_from_dict(obstacle, id_to_uid) for obstacle in data.get("obstacles") or []]
     level = PixelLevelData(
         level_grid_version=level_grid_version,
         level_name=data.get("levelName"),
@@ -139,9 +334,9 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
         grid_rows=int(data.get("gridRows", 10)),
         grid_cols=int(data.get("gridCols", 10)),
         board=int(data.get("board", 1)),
-        grid_cells=[cell_from_dict(cell) for cell in data.get("gridCells", [])],
-        grid_lanes=list(data.get("gridLanes") or []),
-        obstacles=list(data.get("obstacles") or []),
+        grid_cells=cells,
+        grid_lanes=grid_lanes,
+        obstacles=obstacles,
         pixel_grid=pixel_grid,
         game_mode=int(data.get("gameMode", 1)),
         difficulty=int(data.get("difficulty", 0)),

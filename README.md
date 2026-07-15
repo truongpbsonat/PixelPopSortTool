@@ -1,11 +1,12 @@
 # MarbleSort Pixel Level Tool
 
-Desktop Python editor for MarbleSort `GameMode.Pixel` levels. The tool edits only two data areas:
+Desktop Python editor for MarbleSort `GameMode.Pixel` levels. The tool edits three data areas:
 
 - Box Ball Grid: `gridRows`, `gridCols`, sparse `gridCells`.
 - Pixel Grid: `pixelGrid.width`, `pixelGrid.height`, dense row-major `pixelGrid.colorIds`.
+- Box Grid effects and source-grid obstacles defined by `NewRefactor.MyLevelData`.
 
-It intentionally does not edit Classic mode, cargo lanes, obstacles, cell effects, pixel modifiers, boosters, runtime gameplay, or Unity scenes.
+It intentionally does not edit Classic mode, cargo lanes/cargo effects, pixel modifiers, boosters, runtime gameplay, or Unity scenes.
 
 ## Layout
 
@@ -13,7 +14,7 @@ The main window has a resizable splitter:
 
 - Left: Box Ball Grid, shape/direction/active controls, source box canvas.
 - Right: Pixel Grid, paint/erase/eyedropper/fill/import/trim-border controls, pixel canvas.
-- Side panel: shared color palette, live color balance, validation messages.
+- Side tabs: shared color palette, selected-box effect inspector, obstacle list/properties, and validation messages.
 
 The **Replace Color** action changes every Color A to Color B in both grids of the current level and
 can be undone/redone as a single operation.
@@ -85,13 +86,30 @@ Each source box is serialized as:
 The serializer always writes:
 
 - `gridLanes: []`
-- root `obstacles: []`
 - `pixelGrid.modifiers: []`
 - `pixelGrid.obstacles: []`
-- `effects: null`
+- `effects: null` when a box has no effects
 
-IDs are reassigned deterministically on save, sorted by `gridY`, then `gridX`, starting at `300`.
+Box IDs are reassigned deterministically on save, sorted by `gridY`, then `gridX`, starting at `300`.
+Elevator hidden cells continue in the same range. Obstacle IDs use Unity's type-specific ranges
+(`3001`, `5001`, `6001`, `6501`, `7001`, `8001`, and `8501`), and linked target IDs are remapped automatically.
 The tool accepts any integer `levelGridVersion` and preserves the loaded value when saving.
+
+## Box Effects And Obstacles
+
+Supported effects are Frozen, Hidden, ArrowLock, KeyForLockedGate, and ScissorForWoolCrate.
+Select one box and use the **Box Inspector** tab to add, edit, or remove effects.
+
+Tunnel grid cells can be opened, round-tripped without losing `color`, `direction`, or `storedCells`,
+and are shown on the Box Grid with a direction-aware tunnel icon and stored-box count. Select a tunnel
+to view its color-coded `storedCells` in JSON order and edit each stored box from **Box Inspector**.
+
+Supported source-grid obstacles are LinkedContainer, LargeBlockObstacle, Pins, LockedGate,
+WoolCrate, ColorGate, and Elevator. Ctrl-click boxes to create target-based or area obstacles from
+the **Obstacles** tab. Elevator layers are ordered from bottom to top and contain full Normal box data.
+
+Cargo data is deliberately fail-fast: non-empty `gridLanes`, LinkedCargo, and KeyForCargo cannot be
+opened or saved. Unsupported grid-cell subtypes are also rejected instead of being silently discarded.
 
 ## ItemColor IDs
 
@@ -169,12 +187,13 @@ The tool does not hardcode any Unity repository path.
 
 ## Unsupported Features
 
-Cargo editor, Classic mode, source obstacles, pixel obstacles, pixel modifiers, cell effects, Tunnel, TrioBox, PopMachine, LargeBlock, boosters, and Unity EditorWindow workflows are intentionally out of scope.
+Cargo editor, LinkedCargo, KeyForCargo, Classic mode, pixel obstacles, pixel modifiers,
+TrioBox, PopMachine, LargeBlockCellData, boosters, and Unity EditorWindow workflows are intentionally out of scope.
 
 ## Unity Checklist
 
 1. Save JSON from the tool.
 2. Place it under the configured Pixel level data folder.
 3. Deserialize with `JsonConvert.DeserializeObject<GridPixelLevelData>` and `TypeNameHandling.Auto`.
-4. Confirm each `gridCells` entry has `$type: NewRefactor.CellData, Assembly-CSharp`.
+4. Confirm every cell/effect/obstacle has its `NewRefactor.*Data, Assembly-CSharp` discriminator.
 5. Play-test in Unity; balance alone does not guarantee solvability.

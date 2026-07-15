@@ -1,8 +1,8 @@
 import json
 
 from pixel_level_tool.domain.enums import CellShape, Direction, ItemColor
-from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
-from pixel_level_tool.services.level_serializer import CELL_TYPE_NAME, dumps_level, level_from_dict
+from pixel_level_tool.domain.level_models import BoxCellData, FrozenCellEffectData, PixelGridData, PixelLevelData, TunnelCellData
+from pixel_level_tool.services.level_serializer import CELL_TYPE_NAME, TUNNEL_TYPE_NAME, dumps_level, level_from_dict, level_to_dict
 
 
 def make_level():
@@ -48,26 +48,26 @@ def test_load_allows_missing_pixel_grid():
     assert loaded.grid_cells[0].shape == CellShape.Rectangle_3x1
 
 
-def test_save_clears_grid_lanes_loaded_from_existing_level():
+def test_load_and_save_preserve_cargo_grid_lanes():
     data = json.loads(dumps_level(make_level()))
     data["gridLanes"] = [{"laneId": 1, "cells": [0, 1]}]
 
     loaded = level_from_dict(data)
     written = json.loads(dumps_level(loaded))
 
-    assert loaded.grid_lanes == [{"laneId": 1, "cells": [0, 1]}]
-    assert written["gridLanes"] == []
+    assert loaded.grid_lanes == data["gridLanes"]
+    assert written["gridLanes"] == data["gridLanes"]
 
 
-def test_load_preserves_cell_effects():
+def test_load_preserves_typed_cell_effects():
     data = json.loads(dumps_level(make_level()))
-    data["gridCells"][0]["effects"] = [{"type": "ice", "value": 2}]
+    data["gridCells"][0]["effects"] = [{"$type": "NewRefactor.FrozenCellEffectData, Assembly-CSharp", "frozenCount": 2}]
 
     loaded = level_from_dict(data)
     written = json.loads(dumps_level(loaded))
 
-    assert loaded.grid_cells[0].effects == [{"type": "ice", "value": 2}]
-    assert written["gridCells"][0]["effects"] == [{"type": "ice", "value": 2}]
+    assert loaded.grid_cells[0].effects == [FrozenCellEffectData(2)]
+    assert written["gridCells"][0]["effects"][0]["frozenCount"] == 2
 
 
 def test_load_preserves_supported_root_metadata():
@@ -104,3 +104,56 @@ def test_load_and_save_preserve_any_grid_version():
 
     assert loaded.level_grid_version == 3
     assert written["levelGridVersion"] == 3
+
+
+def test_tunnel_cell_round_trip_preserves_color_direction_and_stored_cells():
+    data = json.loads(dumps_level(make_level()))
+    stored = {
+        "$type": CELL_TYPE_NAME,
+        "colorList": [int(ItemColor.Green)],
+        "effects": [{"$type": "NewRefactor.FrozenCellEffectData, Assembly-CSharp", "frozenCount": 2}],
+        "gridX": 0,
+        "gridY": 0,
+        "shape": int(CellShape.Rectangle_3x1),
+        "direction": int(Direction.Up),
+        "id": 171,
+        "isActive": True,
+    }
+    tunnel = {
+        "$type": TUNNEL_TYPE_NAME,
+        "color": int(ItemColor.Blue),
+        "storedCells": [stored],
+        "gridX": 1,
+        "gridY": 1,
+        "shape": int(CellShape.Square_3x3),
+        "direction": int(Direction.Right),
+        "id": 17,
+        "isActive": True,
+    }
+    data["gridCells"] = [tunnel]
+
+    loaded = level_from_dict(data)
+    written = level_to_dict(loaded, assign_ids=False)["gridCells"][0]
+
+    assert isinstance(loaded.grid_cells[0], TunnelCellData)
+    assert loaded.grid_cells[0].color == ItemColor.Blue
+    assert loaded.grid_cells[0].direction == Direction.Right
+    assert loaded.grid_cells[0].stored_cells[0].effects == [FrozenCellEffectData(2)]
+    assert written == tunnel
+
+
+def test_tunnel_source_histogram_uses_stored_cell_colors():
+    tunnel = TunnelCellData(
+        0,
+        0,
+        CellShape.Square_3x3,
+        Direction.Up,
+        ItemColor.Blue,
+        stored_cells=[
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Green),
+        ],
+    )
+    level = PixelLevelData(grid_cells=[tunnel])
+
+    assert level.source_histogram() == {int(ItemColor.Red): 3, int(ItemColor.Green): 3}

@@ -1,5 +1,5 @@
 from pixel_level_tool.domain.enums import CellShape, Direction, ItemColor
-from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData
+from pixel_level_tool.domain.level_models import BoxCellData, FrozenCellEffectData, PixelGridData, PixelLevelData
 from pixel_level_tool.services.level_validator import LevelValidator
 
 
@@ -53,7 +53,7 @@ def test_invalid_pixel_length():
     assert any("length" in message.message for message in LevelValidator().validate(level).errors)
 
 
-def test_grid_lanes_warn_but_do_not_invalidate_level():
+def test_grid_lanes_are_allowed_with_preservation_warning():
     level = PixelLevelData(
         grid_rows=3,
         grid_cols=3,
@@ -69,7 +69,7 @@ def test_grid_lanes_warn_but_do_not_invalidate_level():
     assert any("gridLanes" in message.message for message in result.warnings)
 
 
-def test_cell_effects_warn_but_do_not_invalidate_level():
+def test_supported_cell_effects_are_validated_without_unsupported_warning():
     level = PixelLevelData(
         grid_rows=3,
         grid_cols=3,
@@ -82,7 +82,7 @@ def test_cell_effects_warn_but_do_not_invalidate_level():
                 Direction.Up,
                 ItemColor.Red,
                 300,
-                effects=[{"type": "ice"}],
+                effects=[FrozenCellEffectData(0)],
             )
         ],
         pixel_grid=PixelGridData(3, 1, [0, 0, 0]),
@@ -91,4 +91,4 @@ def test_cell_effects_warn_but_do_not_invalidate_level():
     result = LevelValidator().validate(level)
 
     assert result.is_valid
-    assert any("effects" in message.message for message in result.warnings)
+    assert not any("not edited" in message.message for message in result.warnings)

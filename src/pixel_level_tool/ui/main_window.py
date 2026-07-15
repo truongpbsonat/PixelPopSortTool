@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -37,6 +37,7 @@ from pixel_level_tool.ui.dialogs.new_level_dialog import NewLevelDialog
 from pixel_level_tool.ui.dialogs.replace_color_dialog import ReplaceColorDialog
 from pixel_level_tool.ui.dialogs.resize_grid_dialog import ResizeGridDialog
 from pixel_level_tool.ui.widgets.box_grid_editor import BoxGridEditor
+from pixel_level_tool.ui.widgets.box_inspector import BoxInspector, ObstaclesPanel
 from pixel_level_tool.ui.widgets.color_palette import ColorPalette
 from pixel_level_tool.ui.widgets.pixel_grid_editor import PixelGridEditor
 from pixel_level_tool.ui.widgets.shape_palette import ShapePalette
@@ -123,6 +124,8 @@ class MainWindow(QMainWindow):
         self.box_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.pixel_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.validation_panel = ValidationPanel()
+        self.box_inspector = BoxInspector()
+        self.obstacles_panel = ObstaclesPanel()
 
         left = QWidget()
         left.setMinimumWidth(0)
@@ -230,11 +233,11 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
 
-        side = QSplitter(Qt.Vertical)
-        side.addWidget(self.color_palette)
-        side.addWidget(self.validation_panel)
-        side.setSizes([180, 530])
-        side.setChildrenCollapsible(False)
+        side = QTabWidget()
+        side.addTab(self.color_palette, "Colors")
+        side.addTab(self.box_inspector, "Box Inspector")
+        side.addTab(self.obstacles_panel, "Obstacles")
+        side.addTab(self.validation_panel, "Validation")
 
         root_splitter = QSplitter()
         root_splitter.addWidget(splitter)
@@ -271,6 +274,9 @@ class MainWindow(QMainWindow):
         self.color_palette.color_changed.connect(lambda color: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, color, self.shape_palette.is_active))
         self.shape_palette.shape_changed.connect(lambda: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, self.color_palette.selected_color, self.shape_palette.is_active))
         self.box_editor.model_changed.connect(self._model_changed)
+        self.box_editor.selection_changed.connect(self._box_selection_changed)
+        self.box_inspector.model_changed.connect(self._model_changed)
+        self.obstacles_panel.model_changed.connect(self._model_changed)
         self.pixel_editor.model_changed.connect(self._model_changed)
         self.pixel_editor.color_picked.connect(self.color_palette.set_selected_color)
         self.paint_button.clicked.connect(lambda: self._set_pixel_mode("paint"))
@@ -293,6 +299,11 @@ class MainWindow(QMainWindow):
         button = self.pixel_tool_buttons[mode]
         if not button.isChecked():
             button.setChecked(True)
+
+    def _box_selection_changed(self, indices) -> None:
+        selected = list(indices)
+        self.box_inspector.set_context(self.level, selected)
+        self.obstacles_panel.set_context(self.level, selected)
 
     def _toggle_pixel_grid_lines(self, checked: bool) -> None:
         self.pixel_editor.show_grid_lines = checked
@@ -367,6 +378,9 @@ class MainWindow(QMainWindow):
             widget.blockSignals(False)
         self.box_editor.set_level(self.level)
         self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, self.color_palette.selected_color, self.shape_palette.is_active)
+        selected = sorted(self.box_editor.selected_indices)
+        self.box_inspector.set_context(self.level, selected)
+        self.obstacles_panel.set_context(self.level, selected)
         self.pixel_editor.set_level(self.level)
         self.color_palette.refresh(self.level)
         self.pixel_editor.set_color(self.color_palette.selected_color)
@@ -471,11 +485,24 @@ class MainWindow(QMainWindow):
             return
         rows, cols = dialog.height.value(), dialog.width.value()
 
-        def mutate() -> None:
-            removed = self.level.resize_box_grid(rows, cols, drop_out_of_bounds=False)
+        removed, invalid_obstacles = self.level.resize_issues(rows, cols)
+        drop_invalid = False
+        if removed or invalid_obstacles:
+            details = []
             if removed:
-                if QMessageBox.question(self, "Boxes out of bounds", "Drop boxes outside the new bounds?") == QMessageBox.Yes:
-                    self.level.resize_box_grid(rows, cols, drop_out_of_bounds=True)
+                details.append(f"{len(removed)} box(es)")
+            if invalid_obstacles:
+                details.append(f"{len(invalid_obstacles)} obstacle(s)")
+            if QMessageBox.question(
+                self,
+                "Box Grid data out of bounds",
+                f"Resize will remove {' and '.join(details)} outside the new bounds. Continue?",
+            ) != QMessageBox.Yes:
+                return
+            drop_invalid = True
+
+        def mutate() -> None:
+            self.level.resize_box_grid(rows, cols, drop_out_of_bounds=drop_invalid)
 
         self._wrap_change("Resize box grid", mutate)
 
