@@ -46,6 +46,11 @@ Smoke-test entrypoints:
 Use **Open Folder** (`Ctrl+O`) to select the folder containing numbered level files. The editor recognizes
 `<level>.json` and category variants such as `<level>.<category>.json`, opens the matching/current level
 or the first available level, and enables **Prev** / **Next** (`Alt+Left` / `Alt+Right`) for fast navigation.
+Enter a number in **Level** and click **Load Level** to open that level directly from the selected folder.
+
+Use **Open File** (`Ctrl+Shift+O`) to open an individual JSON file without changing the selected level
+folder. Saving that directly opened file continues to use its own path; folder navigation and **Load Level**
+continue to use the folder selected with **Open Folder**.
 
 While working in a selected level folder, **Save** (`Ctrl+S`) writes directly to the numbered file for the
 Level currently shown in the editor. **Save As** is the only action that opens a file dialog and allows a

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QSpinBox
 
 
 class NewLevelDialog(QDialog):
@@ -11,7 +11,6 @@ class NewLevelDialog(QDialog):
         self.level = QSpinBox()
         self.level.setRange(1, 99999)
         self.level.setValue(1)
-        self.name = QLineEdit("Pixel Level 1")
         self.box_rows = QSpinBox()
         self.box_rows.setRange(1, 200)
         self.box_rows.setValue(10)
@@ -25,7 +24,6 @@ class NewLevelDialog(QDialog):
         self.pixel_height.setRange(1, 256)
         self.pixel_height.setValue(8)
         layout.addRow("Level", self.level)
-        layout.addRow("Name", self.name)
         layout.addRow("Box rows", self.box_rows)
         layout.addRow("Box cols", self.box_cols)
         layout.addRow("Pixel width", self.pixel_width)

@@ -28,6 +28,8 @@ def test_main_window_smoke(qtbot):
     qtbot.addWidget(window)
     assert window.new_action is not None
     assert window.open_action is not None
+    assert window.open_file_action is not None
+    assert window.load_level_button is not None
     assert window.save_action is not None
     assert window.import_legacy_button is not None
     assert window.trim_empty_button is not None
@@ -39,6 +41,7 @@ def test_main_window_smoke(qtbot):
     assert window.pixel_editor is not None
     assert not hasattr(window, "level_grid_version_spin")
     assert not hasattr(window, "category_spin")
+    assert not hasattr(window, "name_edit")
     assert window.box_editor.minimumWidth() == 0
     assert window.pixel_editor.minimumWidth() == 0
     assert "Cargo" not in window.windowTitle()
@@ -265,6 +268,7 @@ def test_toolbar_tooltips_show_keyboard_shortcuts(qtbot):
     actions = (
         window.new_action,
         window.open_action,
+        window.open_file_action,
         window.prev_level_action,
         window.next_level_action,
         window.save_action,
@@ -430,6 +434,55 @@ def test_open_folder_and_prev_next_navigate_existing_levels(qtbot, monkeypatch, 
     assert window.path == level_folder / "3.json"
     assert window.prev_level_action.isEnabled()
     assert not window.next_level_action.isEnabled()
+    window.close()
+
+
+def test_open_file_preserves_selected_level_folder(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+    selected_folder = tmp_path / "selected-levels"
+    selected_folder.mkdir()
+    external_folder = tmp_path / "external"
+    external_folder.mkdir()
+    external_path = external_folder / "custom.json"
+    save_level(external_path, _valid_level(8))
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(external_path), "JSON (*.json)"),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level_folder = selected_folder
+    window.auto_level_save = True
+
+    window.open_file_action.trigger()
+
+    assert window.level.level == 8
+    assert window.path == external_path
+    assert window.level_folder == selected_folder
+    assert not window.auto_level_save
+    window.close()
+
+
+def test_load_level_button_loads_number_from_selected_folder(qtbot, tmp_path):
+    level_folder = tmp_path / "levels"
+    level_folder.mkdir()
+    save_level(level_folder / "2.json", _valid_level(2))
+    save_level(level_folder / "7.json", _valid_level(7))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level_folder = level_folder
+    window.auto_level_save = True
+    window.level_spin.setValue(7)
+
+    assert not window.dirty
+
+    window.load_level_button.click()
+
+    assert window.level.level == 7
+    assert window.path == level_folder / "7.json"
+    assert window.level_folder == level_folder
+    assert window.auto_level_save
     window.close()
 
 

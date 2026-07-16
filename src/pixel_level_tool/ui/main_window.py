@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -78,6 +77,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
         self.new_action = QAction("New", self)
         self.open_action = QAction("Open Folder", self)
+        self.open_file_action = QAction("Open File", self)
         self.prev_level_action = QAction("Prev", self)
         self.next_level_action = QAction("Next", self)
         self.save_action = QAction("Save", self)
@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         for action in (
             self.new_action,
             self.open_action,
+            self.open_file_action,
             self.prev_level_action,
             self.next_level_action,
             self.save_action,
@@ -113,6 +114,7 @@ class MainWindow(QMainWindow):
         self.light_mode_button.setToolTip("Use light mode")
         self.new_action.setShortcut(QKeySequence.New)
         self.open_action.setShortcut(QKeySequence.Open)
+        self.open_file_action.setShortcut("Ctrl+Shift+O")
         self.prev_level_action.setShortcut("Alt+Left")
         self.next_level_action.setShortcut("Alt+Right")
         self.save_action.setShortcut(QKeySequence.Save)
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
         action_tooltips = (
             (self.new_action, "Create a new level"),
             (self.open_action, "Open a level folder"),
+            (self.open_file_action, "Open one level file without changing the selected folder"),
             (self.prev_level_action, "Open the previous level"),
             (self.next_level_action, "Open the next level"),
             (self.save_action, "Save the current level"),
@@ -137,7 +140,8 @@ class MainWindow(QMainWindow):
         meta_layout = QGridLayout(meta)
         self.level_spin = QSpinBox()
         self.level_spin.setRange(1, 99999)
-        self.name_edit = QLineEdit()
+        self.load_level_button = QPushButton("Load Level")
+        self.load_level_button.setToolTip("Load this level number from the selected folder")
         self.game_mode_spin = QSpinBox()
         self.game_mode_spin.setRange(0, 99999)
         self.map_type_spin = QSpinBox()
@@ -148,17 +152,16 @@ class MainWindow(QMainWindow):
         self.difficulty_spin.setRange(0, 99999)
         meta_layout.addWidget(QLabel("Level"), 0, 0)
         meta_layout.addWidget(self.level_spin, 0, 1)
-        meta_layout.addWidget(QLabel("Name"), 0, 2)
-        meta_layout.addWidget(self.name_edit, 0, 3, 1, 3)
-        meta_layout.addWidget(QLabel("Game Mode"), 0, 6)
-        meta_layout.addWidget(self.game_mode_spin, 0, 7)
+        meta_layout.addWidget(self.load_level_button, 0, 2)
+        meta_layout.addWidget(QLabel("Game Mode"), 0, 3)
+        meta_layout.addWidget(self.game_mode_spin, 0, 4)
         meta_layout.addWidget(QLabel("Map Type"), 1, 0)
         meta_layout.addWidget(self.map_type_spin, 1, 1)
         meta_layout.addWidget(QLabel("Board"), 1, 2)
         meta_layout.addWidget(self.board_spin, 1, 3)
         meta_layout.addWidget(QLabel("Difficulty"), 1, 4)
         meta_layout.addWidget(self.difficulty_spin, 1, 5)
-        meta_layout.setColumnStretch(3, 1)
+        meta_layout.setColumnStretch(5, 1)
 
         self.color_palette = ColorPalette()
         self.shape_palette = ShapePalette()
@@ -332,6 +335,8 @@ class MainWindow(QMainWindow):
         self.light_mode_button.clicked.connect(lambda: self._set_theme("light"))
         self.new_action.triggered.connect(self.new_level)
         self.open_action.triggered.connect(self.open_level)
+        self.open_file_action.triggered.connect(self.open_file)
+        self.load_level_button.clicked.connect(self.load_level_from_folder)
         self.prev_level_action.triggered.connect(self.open_previous_level)
         self.next_level_action.triggered.connect(self.open_next_level)
         self.save_action.triggered.connect(self.save)
@@ -340,14 +345,12 @@ class MainWindow(QMainWindow):
         self.undo_action.triggered.connect(self.commands.undo)
         self.redo_action.triggered.connect(self.commands.redo)
         for spin_box in (
-            self.level_spin,
             self.game_mode_spin,
             self.map_type_spin,
             self.board_spin,
             self.difficulty_spin,
         ):
             spin_box.valueChanged.connect(self._metadata_changed)
-        self.name_edit.textChanged.connect(self._metadata_changed)
         self.color_palette.color_changed.connect(self._replace_color_from_palette)
         self.color_palette.color_changed.connect(self.pixel_editor.set_color)
         self.color_palette.color_changed.connect(lambda color: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, color, self.shape_palette.is_active, self.shape_palette.is_tunnel))
@@ -419,10 +422,7 @@ class MainWindow(QMainWindow):
 
     def _metadata_changed(self) -> None:
         changed = False
-        previous_level = self.level.level
         metadata_values = (
-            ("level", self.level_spin.value()),
-            ("level_name", self.name_edit.text()),
             ("game_mode", self.game_mode_spin.value()),
             ("map_type", self.map_type_spin.value()),
             ("board", self.board_spin.value()),
@@ -434,8 +434,6 @@ class MainWindow(QMainWindow):
                 changed = True
         if changed:
             self._set_dirty(True)
-            if self.level.level != previous_level:
-                self._refresh_level_navigation()
 
     def _set_dirty(self, dirty: bool) -> None:
         self.dirty = dirty
@@ -450,7 +448,6 @@ class MainWindow(QMainWindow):
         self.level.pixel_grid.ensure_dense()
         for widget in (
             self.level_spin,
-            self.name_edit,
             self.game_mode_spin,
             self.map_type_spin,
             self.board_spin,
@@ -458,14 +455,12 @@ class MainWindow(QMainWindow):
         ):
             widget.blockSignals(True)
         self.level_spin.setValue(self.level.level)
-        self.name_edit.setText(self.level.level_name or "")
         self.game_mode_spin.setValue(self.level.game_mode)
         self.map_type_spin.setValue(self.level.map_type)
         self.board_spin.setValue(self.level.board)
         self.difficulty_spin.setValue(self.level.difficulty)
         for widget in (
             self.level_spin,
-            self.name_edit,
             self.game_mode_spin,
             self.map_type_spin,
             self.board_spin,
@@ -518,7 +513,7 @@ class MainWindow(QMainWindow):
             grid_rows=dialog.box_rows.value(),
             grid_cols=dialog.box_cols.value(),
             level=dialog.level.value(),
-            level_name=dialog.name.text(),
+            level_name=f"Pixel Level {dialog.level.value()}",
             pixel_grid=PixelGridData(dialog.pixel_width.value(), dialog.pixel_height.value()),
         )
         self.path = None
@@ -559,6 +554,44 @@ class MainWindow(QMainWindow):
                 7000,
             )
 
+    def open_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Pixel level file",
+            self.settings.get("last_open_dir", ""),
+            "JSON (*.json)",
+        )
+        if not path or not self._confirm_discard():
+            return
+        self._load_path(Path(path))
+
+    def load_level_from_folder(self) -> None:
+        if self.level_folder is None:
+            QMessageBox.warning(self, "No level folder", "Select a level folder first.")
+            return
+
+        level_number = self.level_spin.value()
+        candidates = [
+            path
+            for path in self._level_files(self.level_folder)
+            if self._level_file_key(path)[0] == level_number
+        ]
+        preferred_key = (level_number, self.level.category)
+        target = next(
+            (path for path in candidates if self._level_file_key(path) == preferred_key),
+            candidates[0] if candidates else None,
+        )
+        if target is None:
+            QMessageBox.warning(
+                self,
+                "Level not found",
+                f"Level {level_number} was not found in {self.level_folder}.",
+            )
+            return
+        if not self._confirm_discard():
+            return
+        self._load_path(target, from_level_folder=True)
+
     def _load_path(self, path: Path, *, from_level_folder: bool = False) -> bool:
         try:
             self.level = load_level(path)
@@ -566,10 +599,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", str(exc))
             return False
         self.path = path
-        self.level_folder = path.parent
         self.auto_level_save = from_level_folder
         self.settings.set("last_open_dir", str(path.parent))
         if from_level_folder:
+            self.level_folder = path.parent
             self.settings.set("last_level_folder", str(path.parent))
         self.recent_files.add(path)
         self.commands.clear()
@@ -665,7 +698,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
         self.path = target
-        self.level_folder = target.parent
         self.settings.set("last_save_dir", str(target.parent))
         self.recent_files.add(target)
         self._set_dirty(False)
