@@ -52,7 +52,14 @@ class ImageImportDialog(QDialog):
         self.preview.setScaledContents(False)
         root.addWidget(self.preview)
         buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        # ``Apply`` has ``ApplyRole`` and therefore does not emit the
+        # button-box ``accepted`` signal (that signal is reserved for
+        # buttons with ``AcceptRole`` such as Ok/Save).  Connect the actual
+        # button so clicking Apply closes the dialog and lets the import
+        # workflow continue.
+        apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
+        if apply_button is not None:
+            apply_button.clicked.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 

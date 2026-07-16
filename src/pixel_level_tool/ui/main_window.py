@@ -849,18 +849,32 @@ class MainWindow(QMainWindow):
         if not self._is_dialog_accepted(dialog.exec()):
             return
 
+        width = dialog.width.value()
+        height = dialog.height.value()
+        try:
+            # Import before creating the undo command.  A bad path or an
+            # unreadable image must not create a dirty, no-op history entry.
+            color_ids = import_image_to_color_ids(
+                dialog.selected_path,
+                width,
+                height,
+                dialog.alpha.value(),
+            )
+        except ImageImportError as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+
         def mutate() -> None:
-            try:
-                width = dialog.width.value()
-                height = dialog.height.value()
-                color_ids = import_image_to_color_ids(dialog.selected_path, width, height, dialog.alpha.value())
-                grid.width = width
-                grid.height = height
-                grid.color_ids = color_ids
-            except ImageImportError as exc:
-                QMessageBox.critical(self, "Import failed", str(exc))
+            grid.width = width
+            grid.height = height
+            grid.color_ids = color_ids
 
         self._wrap_change("Import image", mutate)
+        painted_count = sum(color_id != EMPTY_COLOR_ID for color_id in color_ids)
+        self.statusBar().showMessage(
+            f"Imported {width}x{height} image ({painted_count} painted pixels)",
+            5000,
+        )
 
     def import_legacy_pixel_grid(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

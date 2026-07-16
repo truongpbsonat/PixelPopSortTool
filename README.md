@@ -179,14 +179,15 @@ Shape masks and rotations mirror `ShapeConfig.asset` plus `ShapeOrientation.Tran
 
 Supported formats: PNG, JPG/JPEG, BMP, TGA.
 
-Import uses Pillow, nearest-neighbor resize, alpha threshold to `-1`, and nearest RGB match to the shared ItemColor palette. Image row 0 maps to pixel grid row 0; data is not flipped or transposed.
+Import uses Pillow, samples the centered one-third of each source region (clamped to 1x1 through 8x8), averages visible RGB values, applies the alpha threshold to `-1`, and uses the nearest RGB match to the shared ItemColor palette. Image row 0 maps to pixel grid row 0; data is not flipped or transposed.
 
 ## Old Level JSON Import
 
 `Import Old JSON` replaces only the current Pixel Grid from the old level's
 `pixelBoard.dimensions` and row-major `pixelBoard.colors` data. Other current level data is preserved,
 and the import can be undone. Old level color `0` means an empty pixel and is converted to `-1`;
-the remaining color IDs are preserved.
+supported color IDs are preserved. Each unsupported old color ID is consistently replaced by a
+different current color that was not already used in the imported level.
 
 ## Validation
 

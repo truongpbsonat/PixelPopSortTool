@@ -162,6 +162,41 @@ def test_box_cells_use_soft_inner_borders_and_separate_outline(qtbot):
     assert all(item.pen().widthF() >= 1.5 for item in outline_items)
 
 
+def test_black_box_is_visually_distinct_from_empty_grid(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+
+    level = PixelLevelData(grid_rows=4, grid_cols=4)
+    level.add_box(BoxCellData(0, 0, CellShape.Square_3x3, Direction.Up, ItemColor.Black))
+    editor.set_level(level)
+
+    grid_items = [
+        item for item in editor.scene.items()
+        if isinstance(item, QGraphicsRectItem) and item.data(1) == "grid-cell"
+    ]
+    outline_items = [
+        item for item in editor.scene.items()
+        if isinstance(item, QGraphicsLineItem) and item.data(1) == "outline"
+    ]
+    label = next(
+        item for item in editor.scene.items()
+        if isinstance(item, QGraphicsTextItem) and item.data(1) == "label"
+    )
+    label_background = next(
+        item for item in editor.scene.items()
+        if isinstance(item, QGraphicsRectItem) and item.data(1) == "label-background"
+    )
+
+    assert len({item.brush().color().rgb() for item in grid_items}) == 2
+    assert all(item.pen().color().lightness() > 128 for item in outline_items)
+    assert all(item.pen().widthF() == 2 for item in outline_items)
+    assert label.font().bold()
+    assert label_background.brush().color().alpha() > 0
+    assert label_background.pen().style() != Qt.NoPen
+    assert label_background.pen().widthF() == 1
+    assert label.zValue() > label_background.zValue()
+
+
 def test_selected_outline_stays_above_box_and_obstacle_layers(qtbot):
     editor = BoxGridEditor()
     qtbot.addWidget(editor)

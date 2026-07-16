@@ -4,7 +4,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QKeyEvent, QPainter, QPainterPath, QPen, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QKeyEvent, QPainter, QPainterPath, QPalette, QPen, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -40,6 +40,7 @@ from pixel_level_tool.domain.shapes import footprint
 CELL = 28
 INNER_CELL_BORDER = QColor(255, 255, 255, 55)
 OUTLINE_BORDER = QColor(20, 24, 30)
+DARK_OUTLINE_BORDER = QColor(205, 212, 222)
 SELECTION_BORDER = QColor(255, 235, 59)
 SELECTION_HALO = QColor(20, 24, 30, 230)
 
@@ -155,6 +156,14 @@ class BoxGridEditor(QGraphicsView):
             return
         width = self.level.grid_cols * CELL
         height = self.level.grid_rows * CELL
+        grid_base = self.palette().color(QPalette.Base)
+        dark_grid = grid_base.lightness() < 128
+        empty_colors = (
+            grid_base.lighter(112 if dark_grid else 102),
+            grid_base.lighter(124) if dark_grid else grid_base.darker(106),
+        )
+        grid_pen = QPen(grid_base.lighter(155) if dark_grid else grid_base.darker(125), 0.8)
+        grid_pen.setCosmetic(True)
         for row in range(self.level.grid_rows):
             label = QGraphicsTextItem(str(row))
             label.setDefaultTextColor(QColor(95, 103, 115))
@@ -167,7 +176,15 @@ class BoxGridEditor(QGraphicsView):
             self.scene.addItem(label)
         for row in range(self.level.grid_rows):
             for col in range(self.level.grid_cols):
-                self.scene.addRect(col * CELL, row * CELL, CELL, CELL, QPen(QColor(210, 216, 224)))
+                grid_item = self.scene.addRect(
+                    col * CELL,
+                    row * CELL,
+                    CELL,
+                    CELL,
+                    grid_pen,
+                    QBrush(empty_colors[(row + col) % 2]),
+                )
+                grid_item.setData(1, "grid-cell")
         for index, cell in enumerate(self.level.grid_cells):
             self._draw_cell(index, cell)
         self._draw_obstacles()
@@ -179,7 +196,8 @@ class BoxGridEditor(QGraphicsView):
         if not cell.is_active:
             brush.setAlpha(110)
         inner_pen = QPen(INNER_CELL_BORDER, 1)
-        outline_pen = QPen(OUTLINE_BORDER, 1.5)
+        outline_color = DARK_OUTLINE_BORDER if brush.lightness() < 70 else OUTLINE_BORDER
+        outline_pen = QPen(outline_color, 2 if brush.lightness() < 70 else 1.5)
         outline_pen.setCosmetic(True)
         occupied = set(footprint(cell.shape, cell.direction))
         scene_occupied = {
@@ -211,10 +229,32 @@ class BoxGridEditor(QGraphicsView):
         scene_top = min(scene_y for _, scene_y in scene_occupied)
         label = QGraphicsTextItem(str(cell.id or index))
         label.setDefaultTextColor(QColor(20, 24, 30))
-        label.setPos(cell.grid_x * CELL + 4, scene_top * CELL + 3)
+        label_font = label.font()
+        label_font.setBold(True)
+        label_font.setPointSizeF(8)
+        label.setFont(label_font)
+        label.document().setDocumentMargin(0)
+        label_x = cell.grid_x * CELL + 3
+        label_y = scene_top * CELL + 3
+        label_bounds = label.boundingRect()
+        label_background = QGraphicsRectItem(
+            label_x,
+            label_y,
+            label_bounds.width() + 6,
+            max(15, label_bounds.height() + 2),
+        )
+        label_background.setBrush(QBrush(QColor(248, 250, 252, 225)))
+        label_pen = QPen(QColor(20, 24, 30, 220), 1)
+        label_pen.setCosmetic(True)
+        label_background.setPen(label_pen)
+        label_background.setData(0, index)
+        label_background.setData(1, "label-background")
+        label_background.setZValue(LABEL_Z + 0.1)
+        self.scene.addItem(label_background)
+        label.setPos(label_x + 3, label_y + 1)
         label.setData(0, index)
         label.setData(1, "label")
-        label.setZValue(LABEL_Z)
+        label.setZValue(LABEL_Z + 0.2)
         self.scene.addItem(label)
         if isinstance(cell, TunnelCellData):
             stored_colors = ", ".join(COLOR_NAMES[stored.color] for stored in cell.stored_cells) or "empty"

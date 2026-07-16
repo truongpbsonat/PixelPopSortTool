@@ -47,8 +47,36 @@ def test_rejects_color_count_that_does_not_match_dimensions():
         )
 
 
-def test_rejects_unsupported_color_id():
-    with pytest.raises(LegacyLevelImportError, match="unsupported color id 99"):
+def test_replaces_unsupported_color_with_unused_current_color():
+    grid = legacy_pixel_grid_from_dict(
+        {
+            "pixelBoard": {
+                "dimensions": {"cols": 6, "rows": 1},
+                "colors": [99, 2, 100, 99, 1, 100],
+            }
+        }
+    )
+
+    assert grid.color_ids == [0, 2, 3, 0, 1, 3]
+
+
+def test_replacement_reserves_valid_colors_even_when_they_appear_later():
+    grid = legacy_pixel_grid_from_dict(
+        {"pixelBoard": {"dimensions": {"cols": 2, "rows": 1}, "colors": [99, 1]}}
+    )
+
+    assert grid.color_ids == [0, 1]
+
+
+def test_rejects_when_there_are_not_enough_unused_current_colors():
+    colors = [*range(1, 17), 99, 100]
+
+    with pytest.raises(LegacyLevelImportError, match="Not enough unused current colors"):
         legacy_pixel_grid_from_dict(
-            {"pixelBoard": {"dimensions": {"cols": 1, "rows": 1}, "colors": [99]}}
+            {
+                "pixelBoard": {
+                    "dimensions": {"cols": len(colors), "rows": 1},
+                    "colors": colors,
+                }
+            }
         )

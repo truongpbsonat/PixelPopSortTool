@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pixel_level_tool.domain.enums import EMPTY_COLOR_ID, is_valid_color_id
+from pixel_level_tool.domain.enums import EMPTY_COLOR_ID, ItemColor
 from pixel_level_tool.domain.level_models import PixelGridData
 
 
@@ -45,13 +45,31 @@ def legacy_pixel_grid_from_dict(data: dict[str, object]) -> PixelGridData:
             f"pixelBoard.colors contains {len(colors)} values; expected {expected} for a {width}x{height} grid."
         )
 
-    color_ids: list[int] = []
     for index, value in enumerate(colors):
         if isinstance(value, bool) or not isinstance(value, int):
             raise LegacyLevelImportError(f"pixelBoard.colors[{index}] must be an integer.")
-        color_id = EMPTY_COLOR_ID if value == 0 else value
-        if not is_valid_color_id(color_id):
-            raise LegacyLevelImportError(f"pixelBoard.colors[{index}] has unsupported color id {value}.")
+
+    valid_color_ids = {int(color) for color in ItemColor}
+    used_color_ids = {value for value in colors if value != 0 and value in valid_color_ids}
+    available_color_ids = iter(sorted(valid_color_ids - used_color_ids))
+    replacement_by_legacy_id: dict[int, int] = {}
+
+    color_ids: list[int] = []
+    for index, value in enumerate(colors):
+        if value == 0:
+            color_id = EMPTY_COLOR_ID
+        elif value in valid_color_ids:
+            color_id = value
+        else:
+            if value not in replacement_by_legacy_id:
+                try:
+                    replacement_by_legacy_id[value] = next(available_color_ids)
+                except StopIteration as exc:
+                    raise LegacyLevelImportError(
+                        "Not enough unused current colors to replace all unsupported "
+                        f"legacy color ids (cannot replace {value} at pixelBoard.colors[{index}])."
+                    ) from exc
+            color_id = replacement_by_legacy_id[value]
         color_ids.append(color_id)
 
     return PixelGridData(width=width, height=height, color_ids=color_ids)
