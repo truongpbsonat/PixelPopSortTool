@@ -1,3 +1,5 @@
+from PySide6.QtCore import QPoint, QSize
+
 from pixel_level_tool.domain.enums import COLOR_HEX, COLOR_NAMES, COLOR_RGB, ItemColor
 from pixel_level_tool.ui.widgets.color_palette import ColorPalette
 
@@ -44,8 +46,8 @@ def test_palette_rows_stay_compact_when_widget_is_tall(qtbot):
     palette.show()
     qtbot.waitExposed(palette)
 
-    first_button = palette._buttons[ItemColor.Black]
-    second_row_button = palette._buttons[ItemColor.LightPink]
+    first_button = palette._buttons[ItemColor.Red]
+    second_row_button = palette._buttons[ItemColor.Black]
 
     assert second_row_button.y() - first_button.y() == (
         palette.SWATCH_SIZE + palette.layout().verticalSpacing()
@@ -60,3 +62,33 @@ def test_selected_color_uses_white_outline(qtbot):
 
     assert "border: 3px solid #ffffff" in palette._buttons[ItemColor.Blue].styleSheet()
     assert "border: 1px solid #7b828c" in palette._buttons[ItemColor.Red].styleSheet()
+
+
+def test_palette_wraps_swatch_rows_to_available_width(qtbot):
+    palette = ColorPalette()
+    qtbot.addWidget(palette)
+    palette.resize(100, 300)
+    palette.show()
+    qtbot.waitExposed(palette)
+    palette.layout().setGeometry(palette.rect())
+    narrow_y = palette._buttons[ItemColor.Pink].y()
+
+    palette.resize(300, 300)
+    palette.layout().activate()
+
+    assert narrow_y > 0
+    assert palette._buttons[ItemColor.Pink].y() == 0
+
+
+def test_each_swatch_has_a_top_left_id_badge(qtbot):
+    palette = ColorPalette()
+    qtbot.addWidget(palette)
+
+    label = palette._id_labels[ItemColor.Periwinkle]
+
+    assert label.text() == str(int(ItemColor.Periwinkle))
+    assert label.parent() is palette._buttons[ItemColor.Periwinkle]
+    assert label.pos() == QPoint(0, 0)
+    assert palette._buttons[ItemColor.Periwinkle].size() == QSize(51, 51)
+    assert "background-color: #ffffff" in label.styleSheet()
+    assert "border: 1px solid #000000" in label.styleSheet()

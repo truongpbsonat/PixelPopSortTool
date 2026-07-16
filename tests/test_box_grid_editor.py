@@ -47,6 +47,97 @@ def test_drag_keeps_grab_offset_and_records_one_change(qtbot):
     assert (before.grid_cells[0].grid_x, before.grid_cells[0].grid_y) == (1, 1)
 
 
+def test_dragging_box_onto_another_box_swaps_them(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+    editor.resize(420, 240)
+    editor.show()
+    qtbot.waitExposed(editor)
+
+    level = PixelLevelData(
+        grid_rows=4,
+        grid_cols=8,
+        grid_cells=[
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
+            BoxCellData(4, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue),
+        ],
+    )
+    editor.set_level(level)
+    changes = []
+    editor.model_changed.connect(lambda label, before: changes.append((label, before)))
+    source = editor.mapFromScene(QPointF(CELL / 2, 3 * CELL + CELL / 2))
+    target = editor.mapFromScene(QPointF(4 * CELL + CELL / 2, 3 * CELL + CELL / 2))
+
+    qtbot.mousePress(editor.viewport(), Qt.LeftButton, pos=source)
+    qtbot.mouseMove(editor.viewport(), pos=target)
+
+    # Swapping is visualized during the drag, before the mouse is released.
+    assert [(cell.grid_x, cell.grid_y) for cell in level.grid_cells] == [(4, 0), (0, 0)]
+    assert changes == []
+
+    qtbot.mouseRelease(editor.viewport(), Qt.LeftButton, pos=target)
+
+    assert [(cell.grid_x, cell.grid_y) for cell in level.grid_cells] == [(4, 0), (0, 0)]
+    assert [label for label, _ in changes] == ["Swap boxes"]
+    assert [(cell.grid_x, cell.grid_y) for cell in changes[0][1].grid_cells] == [(0, 0), (4, 0)]
+
+
+def test_shift_drag_selects_every_box_in_area(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+    editor.resize(420, 240)
+    editor.show()
+    qtbot.waitExposed(editor)
+    level = PixelLevelData(
+        grid_rows=4,
+        grid_cols=8,
+        grid_cells=[
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
+            BoxCellData(4, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue),
+        ],
+    )
+    editor.set_level(level)
+    start = editor.mapFromScene(QPointF(-CELL / 2, 2.5 * CELL))
+    end = editor.mapFromScene(QPointF(7.5 * CELL, 3.5 * CELL))
+
+    qtbot.mousePress(editor.viewport(), Qt.LeftButton, Qt.ShiftModifier, pos=start)
+    qtbot.mouseMove(editor.viewport(), pos=end)
+    qtbot.mouseRelease(editor.viewport(), Qt.LeftButton, Qt.ShiftModifier, pos=end)
+
+    assert editor.selected_indices == {0, 1}
+
+
+def test_dragging_a_selected_group_moves_all_boxes_together(qtbot):
+    editor = BoxGridEditor()
+    qtbot.addWidget(editor)
+    editor.resize(420, 280)
+    editor.show()
+    qtbot.waitExposed(editor)
+    level = PixelLevelData(
+        grid_rows=6,
+        grid_cols=8,
+        grid_cells=[
+            BoxCellData(0, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red),
+            BoxCellData(4, 0, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Blue),
+        ],
+    )
+    editor.set_level(level)
+    editor.selected_indices = {0, 1}
+    editor.selected_index = 0
+    changes = []
+    editor.model_changed.connect(lambda label, before: changes.append(label))
+    source = editor.mapFromScene(QPointF(CELL / 2, 5 * CELL + CELL / 2))
+    target = editor.mapFromScene(QPointF(CELL / 2, 3 * CELL + CELL / 2))
+
+    qtbot.mousePress(editor.viewport(), Qt.LeftButton, pos=source)
+    qtbot.mouseMove(editor.viewport(), pos=target)
+    qtbot.mouseRelease(editor.viewport(), Qt.LeftButton, pos=target)
+
+    assert editor.selected_indices == {0, 1}
+    assert [(cell.grid_x, cell.grid_y) for cell in level.grid_cells] == [(0, 2), (4, 2)]
+    assert changes == ["Move boxes"]
+
+
 def test_box_cells_use_soft_inner_borders_and_separate_outline(qtbot):
     editor = BoxGridEditor()
     qtbot.addWidget(editor)

@@ -11,6 +11,8 @@ from pixel_level_tool.domain.level_models import PixelLevelData
 
 
 CELL = 24
+MAX_GRID_SIZE = 256
+RESIZE_GRAB_PIXELS = 8
 
 
 class PixelGridEditor(QGraphicsView):
@@ -28,6 +30,11 @@ class PixelGridEditor(QGraphicsView):
         self.show_grid_lines = True
         self._stroke_changed = False
         self._stroke_before = None
+        self._resize_edges: frozenset[str] = frozenset()
+        self._resize_before = None
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.setToolTip("Paint pixels, or drag the right/bottom edge to resize the grid")
 
     def set_level(self, level: PixelLevelData) -> None:
         self.level = level
@@ -66,6 +73,56 @@ class PixelGridEditor(QGraphicsView):
             return row, col
         return None
 
+    def _resize_edges_at(self, event) -> frozenset[str]:
+        """Return the resizable trailing edges under the pointer."""
+        if self.level is None:
+            return frozenset()
+        point = self.mapToScene(event.position().toPoint())
+        grid = self.level.pixel_grid
+        scale_x = max(abs(self.transform().m11()), 0.001)
+        scale_y = max(abs(self.transform().m22()), 0.001)
+        tolerance_x = RESIZE_GRAB_PIXELS / scale_x
+        tolerance_y = RESIZE_GRAB_PIXELS / scale_y
+        width = grid.width * CELL
+        height = grid.height * CELL
+        edges: set[str] = set()
+        if -tolerance_y <= point.y() <= height + tolerance_y and abs(point.x() - width) <= tolerance_x:
+            edges.add("right")
+        if -tolerance_x <= point.x() <= width + tolerance_x and abs(point.y() - height) <= tolerance_y:
+            edges.add("bottom")
+        return frozenset(edges)
+
+    def _update_resize_cursor(self, edges: frozenset[str]) -> None:
+        if edges == frozenset(("right", "bottom")):
+            self.viewport().setCursor(Qt.SizeFDiagCursor)
+        elif "right" in edges:
+            self.viewport().setCursor(Qt.SizeHorCursor)
+        elif "bottom" in edges:
+            self.viewport().setCursor(Qt.SizeVerCursor)
+        else:
+            self.viewport().unsetCursor()
+
+    def _resize_to_event(self, event) -> None:
+        if self.level is None:
+            return
+        point = self.mapToScene(event.position().toPoint())
+        grid = self.level.pixel_grid
+        width, height = grid.width, grid.height
+        if "right" in self._resize_edges:
+            width = max(1, min(MAX_GRID_SIZE, int(point.x() / CELL + 0.5)))
+        if "bottom" in self._resize_edges:
+            height = max(1, min(MAX_GRID_SIZE, int(point.y() / CELL + 0.5)))
+        if (width, height) != (grid.width, grid.height):
+            # Always derive the preview from the state at mouse press. This lets
+            # users shrink and expand again in one drag without losing pixels.
+            if self._resize_before is not None:
+                source = self._resize_before.pixel_grid
+                grid.width = source.width
+                grid.height = source.height
+                grid.color_ids = list(source.color_ids)
+            grid.resize(width, height)
+            self.refresh()
+
     def _apply_at(self, row: int, col: int, erase: bool = False) -> None:
         if self.level is None:
             return
@@ -86,6 +143,15 @@ class PixelGridEditor(QGraphicsView):
             self.refresh()
 
     def mousePressEvent(self, event) -> None:
+        resize_edges = self._resize_edges_at(event)
+        if event.button() == Qt.LeftButton and resize_edges:
+            self._resize_edges = resize_edges
+            self._resize_before = self.level.clone() if self.level is not None else None
+            self._stroke_changed = False
+            self._stroke_before = None
+            self._update_resize_cursor(resize_edges)
+            event.accept()
+            return
         cell = self._cell_at_event(event)
         self._stroke_changed = False
         self._stroke_before = self.level.clone() if self.level is not None else None
@@ -94,6 +160,14 @@ class PixelGridEditor(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._resize_edges and event.buttons() & Qt.LeftButton:
+            self._resize_to_event(event)
+            event.accept()
+            return
+        if not event.buttons():
+            super().mouseMoveEvent(event)
+            self._update_resize_cursor(self._resize_edges_at(event))
+            return
         if event.buttons() & (Qt.LeftButton | Qt.RightButton):
             cell = self._cell_at_event(event)
             if cell is not None:
@@ -102,6 +176,20 @@ class PixelGridEditor(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._resize_edges and event.button() == Qt.LeftButton:
+            before = self._resize_before
+            changed = (
+                self.level is not None
+                and before is not None
+                and self.level.pixel_grid != before.pixel_grid
+            )
+            self._resize_edges = frozenset()
+            self._resize_before = None
+            self._update_resize_cursor(self._resize_edges_at(event))
+            if changed:
+                self.model_changed.emit("Resize pixel grid", before)
+            event.accept()
+            return
         if self._stroke_changed:
             self.model_changed.emit("Paint pixels", self._stroke_before)
         self._stroke_changed = False

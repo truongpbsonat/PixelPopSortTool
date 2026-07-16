@@ -74,6 +74,15 @@ class BoxGridEditor(QGraphicsView):
         self._drag_offset: tuple[int, int] = (0, 0)
         self._drag_before: PixelLevelData | None = None
         self._drag_changed = False
+        self._drag_swapped = False
+        self._drag_indices: set[int] = set()
+        self._drag_origins: dict[int, tuple[int, int]] = {}
+        self._rubber_band_origin = None
+        self._rubber_band_additive = False
+        self.setToolTip(
+            "Drag a box to move it or drop it on another box to swap. "
+            "Ctrl-click adds/removes boxes; Shift-drag selects an area."
+        )
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_level(self, level: PixelLevelData) -> None:
@@ -509,6 +518,80 @@ class BoxGridEditor(QGraphicsView):
         self._drag_offset = (0, 0)
         self._drag_before = None
         self._drag_changed = False
+        self._drag_swapped = False
+        self._drag_indices.clear()
+        self._drag_origins.clear()
+
+    def _can_place_positions(self, positions: dict[int, tuple[int, int]]) -> bool:
+        """Validate several box moves as one operation instead of one at a time."""
+        if self.level is None:
+            return False
+        occupied: set[tuple[int, int]] = set()
+        for index, cell in enumerate(self.level.grid_cells):
+            grid_x, grid_y = positions.get(index, (cell.grid_x, cell.grid_y))
+            for dx, dy in footprint(cell.shape, cell.direction):
+                point = (grid_x + dx, grid_y + dy)
+                if (
+                    point[0] < 0
+                    or point[0] >= self.level.grid_cols
+                    or point[1] < 0
+                    or point[1] >= self.level.grid_rows
+                    or point in occupied
+                ):
+                    return False
+                occupied.add(point)
+        return True
+
+    def _apply_positions(self, positions: dict[int, tuple[int, int]]) -> None:
+        if self.level is None:
+            return
+        for index, (grid_x, grid_y) in positions.items():
+            self.level.grid_cells[index].grid_x = grid_x
+            self.level.grid_cells[index].grid_y = grid_y
+
+    def _try_swap_at(self, viewport_position) -> bool:
+        """Swap the dragged box immediately when the pointer enters another box."""
+        if self.level is None or self._drag_index is None or len(self._drag_indices) != 1:
+            return False
+        target_index = self._box_index_at(viewport_position)
+        if target_index is None or target_index == self._drag_index:
+            return False
+        source = self.level.grid_cells[self._drag_index]
+        target = self.level.grid_cells[target_index]
+        positions = {
+            self._drag_index: (target.grid_x, target.grid_y),
+            target_index: (source.grid_x, source.grid_y),
+        }
+        if not self._can_place_positions(positions):
+            return False
+        self._apply_positions(positions)
+        self._drag_changed = True
+        self._drag_swapped = True
+        self.refresh()
+        return True
+
+    def _finish_area_selection(self, viewport_position) -> None:
+        if self.level is None or self._rubber_band_origin is None:
+            return
+        start = self.mapToScene(self._rubber_band_origin)
+        end = self.mapToScene(viewport_position)
+        left, right = sorted((start.x(), end.x()))
+        top, bottom = sorted((start.y(), end.y()))
+        selected: set[int] = set()
+        for index, cell in enumerate(self.level.grid_cells):
+            for grid_x, grid_y in cell.occupied_cells():
+                center_x = (grid_x + 0.5) * CELL
+                center_y = (self._scene_row(grid_y) + 0.5) * CELL
+                if left <= center_x <= right and top <= center_y <= bottom:
+                    selected.add(index)
+                    break
+        if self._rubber_band_additive:
+            self.selected_indices.update(selected)
+        else:
+            self.selected_indices = selected
+        self.selected_index = min(self.selected_indices) if self.selected_indices else None
+        self.selection_changed.emit(sorted(self.selected_indices))
+        self.refresh()
 
     def mousePressEvent(self, event) -> None:
         if self.level is None:
@@ -524,7 +607,7 @@ class BoxGridEditor(QGraphicsView):
         col, row = self._scene_cell_from_event(event)
         clicked_index = self._box_index_at(event.position().toPoint())
         if event.button() == Qt.LeftButton and clicked_index is not None:
-            if event.modifiers() & Qt.ControlModifier:
+            if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
                 if clicked_index in self.selected_indices:
                     self.selected_indices.remove(clicked_index)
                 else:
@@ -533,17 +616,25 @@ class BoxGridEditor(QGraphicsView):
                 self.selection_changed.emit(sorted(self.selected_indices))
                 self.refresh()
                 return
-            self.selected_indices = {clicked_index}
+            if clicked_index not in self.selected_indices:
+                self.selected_indices = {clicked_index}
             self.selected_index = clicked_index
-            self.selection_changed.emit([clicked_index])
+            self.selection_changed.emit(sorted(self.selected_indices))
             cell = self.level.grid_cells[self.selected_index]
             self._drag_index = self.selected_index
             self._drag_offset = (col - cell.grid_x, row - cell.grid_y)
             self._drag_before = self.level.clone()
             self._drag_changed = False
+            self._drag_indices = set(self.selected_indices)
+            self._drag_origins = {
+                index: (self.level.grid_cells[index].grid_x, self.level.grid_cells[index].grid_y)
+                for index in self._drag_indices
+            }
             self.refresh()
             return
-        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier:
+        if event.button() == Qt.LeftButton and event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+            self._rubber_band_origin = event.position().toPoint()
+            self._rubber_band_additive = bool(event.modifiers() & Qt.ControlModifier)
             super().mousePressEvent(event)
             return
         if event.button() == Qt.LeftButton and 0 <= row < self.level.grid_rows and 0 <= col < self.level.grid_cols:
@@ -578,14 +669,23 @@ class BoxGridEditor(QGraphicsView):
 
     def mouseMoveEvent(self, event) -> None:
         if self.level is not None and self._drag_index is not None and event.buttons() & Qt.LeftButton:
+            if self._try_swap_at(event.position().toPoint()):
+                return
             col, row = self._scene_cell_from_event(event)
             offset_x, offset_y = self._drag_offset
             target_x, target_y = col - offset_x, row - offset_y
-            cell = self.level.grid_cells[self._drag_index]
-            if (cell.grid_x, cell.grid_y) != (target_x, target_y):
-                moved = BoxCellData(target_x, target_y, cell.shape, cell.direction, cell.color, cell.id, cell.is_active)
-                if self.level.can_place(moved, ignore_index=self.selected_index):
-                    cell.grid_x, cell.grid_y = target_x, target_y
+            origin_x, origin_y = self._drag_origins[self._drag_index]
+            delta_x, delta_y = target_x - origin_x, target_y - origin_y
+            positions = {
+                index: (grid_x + delta_x, grid_y + delta_y)
+                for index, (grid_x, grid_y) in self._drag_origins.items()
+            }
+            if any(
+                (self.level.grid_cells[index].grid_x, self.level.grid_cells[index].grid_y) != position
+                for index, position in positions.items()
+            ):
+                if self._can_place_positions(positions):
+                    self._apply_positions(positions)
                     self._drag_changed = True
                     self.refresh()
             return
@@ -593,17 +693,30 @@ class BoxGridEditor(QGraphicsView):
 
     def mouseReleaseEvent(self, event) -> None:
         self.setDragMode(QGraphicsView.RubberBandDrag)
+        if self._rubber_band_origin is not None:
+            origin = self._rubber_band_origin
+            additive = self._rubber_band_additive
+            self._rubber_band_origin = None
+            self._rubber_band_additive = False
+            super().mouseReleaseEvent(event)
+            self._rubber_band_origin = origin
+            self._rubber_band_additive = additive
+            self._finish_area_selection(event.position().toPoint())
+            self._rubber_band_origin = None
+            self._rubber_band_additive = False
+            return
+        if self._drag_index is not None:
+            self._try_swap_at(event.position().toPoint())
+        change_label = (
+            "Swap boxes"
+            if self._drag_swapped
+            else "Move boxes" if len(self._drag_indices) > 1
+            else "Move box"
+        )
         if self._drag_changed and self._drag_before is not None:
-            self.model_changed.emit("Move box", self._drag_before)
+            self.model_changed.emit(change_label, self._drag_before)
         self._reset_drag()
         super().mouseReleaseEvent(event)
-        if event.modifiers() & Qt.ControlModifier:
-            selected = {int(item.data(0)) for item in self.scene.selectedItems() if item.data(0) is not None}
-            if selected:
-                self.selected_indices.update(selected)
-                self.selected_index = next(iter(self.selected_indices), None)
-                self.selection_changed.emit(sorted(self.selected_indices))
-                self.refresh()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.ControlModifier:

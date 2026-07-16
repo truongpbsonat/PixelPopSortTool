@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QDialog,
     QFileDialog,
@@ -35,8 +37,8 @@ from pixel_level_tool.services.recent_files_service import RecentFilesService
 from pixel_level_tool.services.settings_service import SettingsService
 from pixel_level_tool.ui.dialogs.image_import_dialog import ImageImportDialog
 from pixel_level_tool.ui.dialogs.new_level_dialog import NewLevelDialog
-from pixel_level_tool.ui.dialogs.replace_color_dialog import ReplaceColorDialog
 from pixel_level_tool.ui.dialogs.resize_grid_dialog import ResizeGridDialog
+from pixel_level_tool.ui.theme import apply_theme, normalize_theme
 from pixel_level_tool.ui.widgets.box_grid_editor import BoxGridEditor
 from pixel_level_tool.ui.widgets.box_inspector import BoxInspector, ObstaclesPanel
 from pixel_level_tool.ui.widgets.color_palette import ColorPalette
@@ -51,6 +53,10 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = SettingsService()
+        self.theme = normalize_theme(self.settings.get("theme"))
+        application = QApplication.instance()
+        if application is not None:
+            apply_theme(application, self.theme)
         self.recent_files = RecentFilesService(self.settings)
         self.validator = LevelValidator()
         self.level = PixelLevelData()
@@ -58,6 +64,7 @@ class MainWindow(QMainWindow):
         self.level_folder: Path | None = None
         self.auto_level_save = False
         self.dirty = False
+        self._replace_color_source = None
         self.commands = CommandStack(self._apply_snapshot)
         self.setAcceptDrops(True)
         self._build_ui()
@@ -90,6 +97,20 @@ class MainWindow(QMainWindow):
             self.redo_action,
         ):
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        self.dark_mode_button = QPushButton("Dark")
+        self.light_mode_button = QPushButton("Light")
+        self.theme_button_group = QButtonGroup(self)
+        self.theme_button_group.setExclusive(True)
+        for button in (self.dark_mode_button, self.light_mode_button):
+            button.setCheckable(True)
+            button.setProperty("themeButton", True)
+            self.theme_button_group.addButton(button)
+            toolbar.addWidget(button)
+        self.dark_mode_button.setChecked(self.theme == "dark")
+        self.light_mode_button.setChecked(self.theme == "light")
+        self.dark_mode_button.setToolTip("Use dark mode")
+        self.light_mode_button.setToolTip("Use light mode")
         self.new_action.setShortcut(QKeySequence.New)
         self.open_action.setShortcut(QKeySequence.Open)
         self.prev_level_action.setShortcut("Alt+Left")
@@ -186,8 +207,11 @@ class MainWindow(QMainWindow):
         self.eyedropper_button = QPushButton("Eyedropper")
         self.fill_button = QPushButton("Fill All")
         self.clear_button = QPushButton("Clear All")
-        self.replace_color_button = QPushButton("Replace Color")
-        self.replace_color_button.setToolTip("Replace every Color A with Color B in the current level")
+        self.replace_color_button = QPushButton("Switch Color")
+        self.replace_color_button.setCheckable(True)
+        self.replace_color_button.setToolTip(
+            "Use the selected color as the source, then choose its replacement from the palette"
+        )
         self.trim_empty_button = QPushButton("Trim Empty Border")
         self.trim_empty_button.setToolTip("Remove empty rows and columns only from the outside edges")
         self.import_button = QPushButton("Import Image")
@@ -206,20 +230,6 @@ class MainWindow(QMainWindow):
         self.pixel_tool_group.setExclusive(True)
         for button in self.pixel_tool_buttons.values():
             button.setCheckable(True)
-            button.setStyleSheet(
-                "QPushButton {"
-                "padding: 4px 10px;"
-                "border: 2px solid #8a929d;"
-                "border-radius: 4px;"
-                "background: #3a3f46;"
-                "color: #f3f6fa;"
-                "}"
-                "QPushButton:checked {"
-                "background: #3a3f46;"
-                "border: 2px solid #00a7c8;"
-                "font-weight: 600;"
-                "}"
-            )
             self.pixel_tool_group.addButton(button)
         self.paint_button.setChecked(True)
         self.grid_lines_button = QPushButton("Grid Lines")
@@ -264,15 +274,30 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
 
-        side = QTabWidget()
-        side.addTab(self.color_palette, "Colors")
-        side.addTab(self.box_inspector, "Box Inspector")
-        side.addTab(self.obstacles_panel, "Obstacles")
-        side.addTab(self.validation_panel, "Validation")
+        self.palette_panel = QWidget()
+        self.palette_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
+        self.palette_layout = QVBoxLayout(self.palette_panel)
+        self.palette_title = QLabel("Colors")
+        self.palette_layout.addWidget(self.palette_title)
+        self.palette_layout.addWidget(self.color_palette)
+        self.palette_layout.addStretch(1)
+
+        self.side_tabs = QTabWidget()
+        self.side_tabs.addTab(self.box_inspector, "Box Inspector")
+        self.side_tabs.addTab(self.obstacles_panel, "Obstacles")
+        self.side_tabs.addTab(self.validation_panel, "Validation")
+
+        self.side_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.side_splitter.addWidget(self.palette_panel)
+        self.side_splitter.addWidget(self.side_tabs)
+        self.side_splitter.setCollapsible(0, False)
+        self.side_splitter.setSizes([280, 540])
+        self.side_splitter.setStretchFactor(0, 0)
+        self.side_splitter.setStretchFactor(1, 1)
 
         root_splitter = QSplitter()
         root_splitter.addWidget(splitter)
-        root_splitter.addWidget(side)
+        root_splitter.addWidget(self.side_splitter)
         root_splitter.setSizes([990, 330])
         root_splitter.setStretchFactor(0, 1)
         root_splitter.setStretchFactor(1, 0)
@@ -282,9 +307,29 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(meta)
         central_layout.addWidget(root_splitter, 1)
         self.setCentralWidget(central)
+        self._update_palette_minimum_height()
         self.statusBar().showMessage("Ready")
 
+    def _update_palette_minimum_height(self) -> None:
+        """Keep enough top-right height for every currently wrapped palette row."""
+        width = max(1, self.color_palette.width())
+        palette_height = self.color_palette.layout().heightForWidth(width)
+        margins = self.palette_layout.contentsMargins()
+        extra_height = (
+            margins.top()
+            + margins.bottom()
+            + self.palette_layout.spacing()
+            + self.palette_title.sizeHint().height()
+        )
+        self.palette_panel.setMinimumHeight(palette_height + extra_height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_palette_minimum_height()
+
     def _connect(self) -> None:
+        self.dark_mode_button.clicked.connect(lambda: self._set_theme("dark"))
+        self.light_mode_button.clicked.connect(lambda: self._set_theme("light"))
         self.new_action.triggered.connect(self.new_level)
         self.open_action.triggered.connect(self.open_level)
         self.prev_level_action.triggered.connect(self.open_previous_level)
@@ -303,6 +348,7 @@ class MainWindow(QMainWindow):
         ):
             spin_box.valueChanged.connect(self._metadata_changed)
         self.name_edit.textChanged.connect(self._metadata_changed)
+        self.color_palette.color_changed.connect(self._replace_color_from_palette)
         self.color_palette.color_changed.connect(self.pixel_editor.set_color)
         self.color_palette.color_changed.connect(lambda color: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, color, self.shape_palette.is_active, self.shape_palette.is_tunnel))
         self.shape_palette.shape_changed.connect(lambda: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, self.color_palette.selected_color, self.shape_palette.is_active, self.shape_palette.is_tunnel))
@@ -327,6 +373,16 @@ class MainWindow(QMainWindow):
         self.import_legacy_button.clicked.connect(self.import_legacy_pixel_grid)
         self.resize_pixel_button.clicked.connect(self.resize_pixel_grid)
         self.rotate_pixel_button.clicked.connect(self.rotate_pixel_grid_clockwise)
+
+    def _set_theme(self, theme: str) -> None:
+        theme = normalize_theme(theme)
+        self.theme = theme
+        self.dark_mode_button.setChecked(theme == "dark")
+        self.light_mode_button.setChecked(theme == "light")
+        application = QApplication.instance()
+        if application is not None:
+            apply_theme(application, theme)
+        self.settings.set("theme", theme)
 
     def _set_pixel_mode(self, mode: str) -> None:
         self.pixel_editor.mode = mode
@@ -719,13 +775,28 @@ class MainWindow(QMainWindow):
             5000,
         )
 
-    def replace_color(self) -> None:
-        dialog = ReplaceColorDialog(self.color_palette.selected_color, self)
-        if not self._is_dialog_accepted(dialog.exec()):
+    def replace_color(self, checked: bool = False) -> None:
+        if not checked:
+            self._replace_color_source = None
+            self.statusBar().showMessage("Switch color cancelled", 3000)
             return
 
-        source = dialog.source_color
-        target = dialog.target_color
+        self._replace_color_source = self.color_palette.selected_color
+        self.statusBar().showMessage(
+            f"Switching {self._replace_color_source.name}: choose the target color from the palette"
+        )
+
+    def _replace_color_from_palette(self, target) -> None:
+        source = self._replace_color_source
+        if source is None or not self.replace_color_button.isChecked():
+            return
+
+        self._replace_color_source = None
+        self.replace_color_button.setChecked(False)
+        if source == target:
+            self.statusBar().showMessage("Switch color cancelled: source and target are the same", 3000)
+            return
+
         before = self.level.clone()
         box_count, pixel_count = self.level.replace_color(source, target)
         if not box_count and not pixel_count:
@@ -735,7 +806,6 @@ class MainWindow(QMainWindow):
         self.commands.push(f"Replace {source.name} with {target.name}", before, self.level)
         self._set_dirty(True)
         self._refresh_all()
-        self.color_palette.set_selected_color(target, emit=True)
         self.statusBar().showMessage(
             f"Replaced {source.name} with {target.name}: {box_count} boxes, {pixel_count} pixels",
             5000,

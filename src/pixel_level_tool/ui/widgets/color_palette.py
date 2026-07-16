@@ -1,39 +1,143 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtWidgets import QGridLayout, QPushButton, QWidget
+import math
+
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtWidgets import QLabel, QLayout, QLayoutItem, QPushButton, QSizePolicy, QWidget
 
 from pixel_level_tool.domain.enums import COLOR_NAMES, COLOR_RGB, ItemColor
 from pixel_level_tool.domain.level_models import PixelLevelData
 
 
+class FlowLayout(QLayout):
+    """Lay widgets left-to-right and wrap them when the row is full."""
+
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._spacing = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientations:
+        return Qt.Orientations()
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def horizontalSpacing(self) -> int:
+        return self._spacing
+
+    def verticalSpacing(self) -> int:
+        return self._spacing
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x = effective.x()
+        y = effective.y()
+        row_height = 0
+
+        for item in self._items:
+            item_size = item.sizeHint()
+            next_x = x + item_size.width() + self._spacing
+            if next_x - self._spacing > effective.right() + 1 and row_height > 0:
+                x = effective.x()
+                y += row_height + self._spacing
+                next_x = x + item_size.width() + self._spacing
+                row_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item_size))
+            x = next_x
+            row_height = max(row_height, item_size.height())
+
+        return y + row_height - rect.y() + margins.bottom()
+
+
 class ColorPalette(QWidget):
     color_changed = Signal(ItemColor)
     COLUMN_COUNT = 5
-    SWATCH_SIZE = 34
+    SWATCH_SIZE = 51
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._selected = ItemColor.Red
         self._buttons: dict[ItemColor, QPushButton] = {}
+        self._id_labels: dict[ItemColor, QLabel] = {}
         self._balance_text: dict[ItemColor, str] = {color: "" for color in ItemColor}
-        layout = QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(6)
-        layout.setVerticalSpacing(6)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout = FlowLayout(self)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        for index, color in enumerate(ItemColor):
+        for color in ItemColor:
             button = QPushButton()
             button.setCheckable(True)
             button.setFixedSize(QSize(self.SWATCH_SIZE, self.SWATCH_SIZE))
             button.setToolTip(f"{int(color):2d}  {COLOR_NAMES[color]}")
             button.clicked.connect(lambda checked=False, picked=color: self.set_selected_color(picked, emit=True))
+            id_label = QLabel(str(int(color)), button)
+            id_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            id_label.setStyleSheet(
+                "QLabel {"
+                "background-color: #ffffff;"
+                "color: #000000;"
+                "border: 1px solid #000000;"
+                "border-radius: 2px;"
+                "padding: 0 2px;"
+                "font-size: 9px;"
+                "font-weight: 700;"
+                "}"
+            )
+            id_label.adjustSize()
+            id_label.move(0, 0)
+            id_label.raise_()
             self._buttons[color] = button
-            layout.addWidget(button, index // self.COLUMN_COUNT, index % self.COLUMN_COUNT)
+            self._id_labels[color] = id_label
+            layout.addWidget(button)
 
-        layout.setColumnStretch(self.COLUMN_COUNT, 1)
         self.set_selected_color(self._selected)
+
+    def sizeHint(self) -> QSize:
+        color_count = len(ItemColor)
+        columns = min(self.COLUMN_COUNT, color_count)
+        rows = math.ceil(color_count / columns)
+        spacing = self.layout().horizontalSpacing()
+        return QSize(
+            columns * self.SWATCH_SIZE + (columns - 1) * spacing,
+            rows * self.SWATCH_SIZE + (rows - 1) * self.layout().verticalSpacing(),
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        # The palette may be clipped while the user gives the lower-right tabs
+        # more room with the splitter.
+        return QSize(0, 0)
 
     @property
     def selected_color(self) -> ItemColor:

@@ -33,6 +33,8 @@ def test_main_window_smoke(qtbot):
     assert window.trim_empty_button is not None
     assert window.replace_color_button is not None
     assert window.rotate_pixel_button is not None
+    assert window.dark_mode_button is not None
+    assert window.light_mode_button is not None
     assert window.box_editor is not None
     assert window.pixel_editor is not None
     assert not hasattr(window, "level_grid_version_spin")
@@ -98,6 +100,51 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     assert window.pixel_editor.scene.sceneRect().height() == 48
     window._set_dirty(False)
     window.close()
+
+
+def test_color_palette_stays_above_the_side_tabs(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.side_splitter.orientation() == Qt.Orientation.Vertical
+    assert window.side_splitter.widget(0).isAncestorOf(window.color_palette)
+    assert window.side_splitter.widget(1) is window.side_tabs
+    assert [window.side_tabs.tabText(index) for index in range(window.side_tabs.count())] == [
+        "Box Inspector",
+        "Obstacles",
+        "Validation",
+    ]
+
+    window.side_tabs.setCurrentIndex(1)
+    assert window.side_tabs.currentWidget() is window.obstacles_panel
+    assert window.side_splitter.widget(0).isAncestorOf(window.color_palette)
+    window.close()
+
+
+def test_theme_buttons_switch_theme_and_persist_choice(qtbot, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "pixel_level_tool.services.settings_service.app_data_dir",
+        lambda: tmp_path,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.theme == "dark"
+    assert window.dark_mode_button.isChecked()
+
+    window.light_mode_button.click()
+
+    assert window.theme == "light"
+    assert window.light_mode_button.isChecked()
+    assert not window.dark_mode_button.isChecked()
+    assert window.settings.get("theme") == "light"
+    window.close()
+
+    restored_window = MainWindow()
+    qtbot.addWidget(restored_window)
+    assert restored_window.theme == "light"
+    assert restored_window.light_mode_button.isChecked()
+    restored_window.close()
 
 
 def test_tunnel_direction_change_survives_main_window_refresh(qtbot):
@@ -463,18 +510,7 @@ def test_color_palette_shows_pixel_minus_box_delta(qtbot):
     window.close()
 
 
-def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch):
-    class DialogStub:
-        source_color = ItemColor.Red
-        target_color = ItemColor.Cyan
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.Accepted
-
-    monkeypatch.setattr("pixel_level_tool.ui.main_window.ReplaceColorDialog", DialogStub)
+def test_switch_color_waits_for_palette_target_updates_level_and_supports_undo(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     window.level = PixelLevelData(
@@ -494,6 +530,14 @@ def test_replace_color_updates_entire_level_and_supports_undo(qtbot, monkeypatch
 
     window.replace_color_button.click()
 
+    assert window.replace_color_button.isChecked()
+    assert window._replace_color_source == ItemColor.Red
+    assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Red, ItemColor.Green]
+
+    window.color_palette._buttons[ItemColor.Cyan].click()
+
+    assert not window.replace_color_button.isChecked()
+    assert window._replace_color_source is None
     assert [cell.color for cell in window.level.grid_cells] == [ItemColor.Cyan, ItemColor.Green]
     assert window.level.pixel_grid.color_ids == [9, 1, 9, EMPTY_COLOR_ID]
     assert window.color_palette.selected_color == ItemColor.Cyan
