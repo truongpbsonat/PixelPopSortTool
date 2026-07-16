@@ -610,6 +610,25 @@ class BoxGridEditor(QGraphicsView):
         self.refresh()
         return True
 
+    def swap_selected(self) -> bool:
+        """Swap the grid positions of the two currently selected boxes."""
+        if self.level is None or len(self.selected_indices) != 2:
+            return False
+        first_index, second_index = sorted(self.selected_indices)
+        first = self.level.grid_cells[first_index]
+        second = self.level.grid_cells[second_index]
+        positions = {
+            first_index: (second.grid_x, second.grid_y),
+            second_index: (first.grid_x, first.grid_y),
+        }
+        if not self._can_place_positions(positions):
+            return False
+        before = self.level.clone()
+        self._apply_positions(positions)
+        self.model_changed.emit("Swap boxes", before)
+        self.refresh()
+        return True
+
     def _finish_area_selection(self, viewport_position) -> None:
         if self.level is None or self._rubber_band_origin is None:
             return
