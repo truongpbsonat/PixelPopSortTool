@@ -139,7 +139,9 @@ def test_tunnel_cell_round_trip_preserves_color_direction_and_stored_cells():
     assert loaded.grid_cells[0].color == ItemColor.Blue
     assert loaded.grid_cells[0].direction == Direction.Right
     assert loaded.grid_cells[0].stored_cells[0].effects == [FrozenCellEffectData(2)]
-    assert written == tunnel
+    # isActive is always forced to False on load, regardless of the saved value.
+    expected = {**tunnel, "isActive": False, "storedCells": [{**stored, "isActive": False}]}
+    assert written == expected
 
 
 def test_tunnel_source_histogram_uses_stored_cell_colors():
