@@ -54,7 +54,7 @@ continue to use the folder selected with **Open Folder**.
 
 While working in a selected level folder, **Save** (`Ctrl+S`) writes directly to the numbered file for the
 Level currently shown in the editor. **Save As** is the only action that opens a file dialog and allows a
-custom folder or file name. Existing files are still backed up to `.json.bak` before being overwritten.
+custom folder or file name. Saving overwrites the existing file directly and does not create a `.json.bak` copy.
 
 ## Test
 
@@ -80,7 +80,7 @@ The build script builds a PyInstaller onedir bundle only. Run tests or `--smoke-
 
 ## Unity JSON
 
-Output JSON is UTF-8, pretty-printed with two-space indent, and writes a final newline. Save is atomic and creates a `.bak` when overwriting from the UI.
+Output JSON is UTF-8, pretty-printed with two-space indent, and writes a final newline. Save is atomic (write to a temp file, then replace).
 
 Each source box is serialized as:
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -257,7 +258,7 @@ def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
         "shape": _require_int_enum(CellShape, data.get("shape", 0), "shape"),
         "direction": _require_int_enum(Direction, data.get("direction", 0), "direction"),
         "id": int(data.get("id", 0)),
-        "is_active": bool(data.get("isActive", True)),
+        "is_active": False,
     }
     if type_name in TUNNEL_TYPE_NAMES_READ:
         stored_data = data.get("storedCells")
@@ -417,6 +418,11 @@ def save_level(path: str | Path, level: PixelLevelData, *, create_backup: bool =
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
+        if target.exists() and not os.access(target, os.W_OK):
+            # A read-only destination (e.g. extracted from a zip, or a git checkout
+            # with the attribute preserved) makes os.replace() fail with
+            # PermissionError on Windows, even though it was just backed up above.
+            target.chmod(stat.S_IWRITE)
         os.replace(temp_name, target)
     except Exception:
         try:

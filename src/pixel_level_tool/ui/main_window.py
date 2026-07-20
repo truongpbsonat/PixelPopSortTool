@@ -205,6 +205,10 @@ class MainWindow(QMainWindow):
         self.deselect_box_button = QPushButton("Deselect Box")
         self.deselect_box_button.setToolTip("Clear the box selection (also Esc or right-click the Box Grid)")
         self.deselect_box_button.clicked.connect(self.box_editor.clear_selection)
+        self.swap_boxes_button = QPushButton("Swap Boxes")
+        self.swap_boxes_button.setToolTip("Swap the grid positions of the 2 selected boxes")
+        self.swap_boxes_button.setEnabled(False)
+        self.swap_boxes_button.clicked.connect(self.box_editor.swap_selected)
         box_zoom_in = QPushButton("Box +")
         box_zoom_out = QPushButton("Box -")
         box_zoom_in.clicked.connect(self.box_editor.zoom_in)
@@ -212,6 +216,7 @@ class MainWindow(QMainWindow):
         box_zoom_row = QHBoxLayout()
         box_zoom_row.addWidget(resize_box)
         box_zoom_row.addWidget(self.deselect_box_button)
+        box_zoom_row.addWidget(self.swap_boxes_button)
         box_zoom_row.addWidget(box_zoom_in)
         box_zoom_row.addWidget(box_zoom_out)
         left_layout.addLayout(box_zoom_row)
@@ -420,6 +425,7 @@ class MainWindow(QMainWindow):
         selected = list(indices)
         self.box_inspector.set_context(self.level, selected)
         self.obstacles_panel.set_context(self.level, selected)
+        self.swap_boxes_button.setEnabled(len(selected) == 2)
 
     def _toggle_pixel_grid_lines(self, checked: bool) -> None:
         self.pixel_editor.show_grid_lines = checked
@@ -712,6 +718,7 @@ class MainWindow(QMainWindow):
         return result
 
     def save(self) -> bool:
+        self._sync_level_number_from_spin()
         if self.auto_level_save and self.level_folder is not None:
             target = self.level_folder / self._default_file_name()
         elif self.path is not None:
@@ -720,13 +727,19 @@ class MainWindow(QMainWindow):
             return self.save_as()
         return self._save_to_path(target)
 
+    def _sync_level_number_from_spin(self) -> None:
+        value = self.level_spin.value()
+        if self.level.level != value:
+            self.level.level = value
+            self._set_dirty(True)
+
     def _save_to_path(self, target: Path) -> bool:
         result = self.validate()
         if not result.is_valid:
             QMessageBox.warning(self, "Validation failed", "Fix validation errors before saving.")
             return False
         try:
-            save_level(target, self.level, create_backup=True)
+            save_level(target, self.level, create_backup=False)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
@@ -739,6 +752,7 @@ class MainWindow(QMainWindow):
         return True
 
     def save_as(self) -> bool:
+        self._sync_level_number_from_spin()
         default_dir = self.settings.get("last_save_dir", "")
         default_name = self._default_file_name()
         path, _ = QFileDialog.getSaveFileName(self, "Save Pixel level", str(Path(default_dir) / default_name), "JSON (*.json)")

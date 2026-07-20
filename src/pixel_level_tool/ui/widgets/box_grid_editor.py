@@ -123,14 +123,12 @@ class BoxGridEditor(QGraphicsView):
                 cell.shape != shape
                 or cell.direction != direction
                 or cell.color != color
-                or cell.is_active != is_active
             ):
                 before = self.level.clone()
                 old = BoxCellData(cell.grid_x, cell.grid_y, cell.shape, cell.direction, cell.color, cell.id, cell.is_active)
                 cell.shape = shape
                 cell.direction = direction
                 cell.color = color
-                cell.is_active = is_active
                 if self.level.can_place(cell, ignore_index=self.selected_index):
                     self.model_changed.emit("Edit box", before)
                     self.refresh()
@@ -138,7 +136,6 @@ class BoxGridEditor(QGraphicsView):
                     cell.shape = old.shape
                     cell.direction = old.direction
                     cell.color = old.color
-                    cell.is_active = old.is_active
 
     def clear_selection(self) -> None:
         if self.selected_index is None and not self.selected_indices:
@@ -193,8 +190,6 @@ class BoxGridEditor(QGraphicsView):
     def _draw_cell(self, index: int, cell: BoxCellData) -> None:
         rgb = COLOR_RGB[cell.color]
         brush = QColor(*rgb)
-        if not cell.is_active:
-            brush.setAlpha(110)
         inner_pen = QPen(INNER_CELL_BORDER, 1)
         outline_color = DARK_OUTLINE_BORDER if brush.lightness() < 70 else OUTLINE_BORDER
         outline_pen = QPen(outline_color, 2 if brush.lightness() < 70 else 1.5)
@@ -607,6 +602,25 @@ class BoxGridEditor(QGraphicsView):
         self._apply_positions(positions)
         self._drag_changed = True
         self._drag_swapped = True
+        self.refresh()
+        return True
+
+    def swap_selected(self) -> bool:
+        """Swap the grid positions of the two currently selected boxes."""
+        if self.level is None or len(self.selected_indices) != 2:
+            return False
+        first_index, second_index = sorted(self.selected_indices)
+        first = self.level.grid_cells[first_index]
+        second = self.level.grid_cells[second_index]
+        positions = {
+            first_index: (second.grid_x, second.grid_y),
+            second_index: (first.grid_x, first.grid_y),
+        }
+        if not self._can_place_positions(positions):
+            return False
+        before = self.level.clone()
+        self._apply_positions(positions)
+        self.model_changed.emit("Swap boxes", before)
         self.refresh()
         return True
 

@@ -1,0 +1,2 @@
+[console_scripts]
+MarbleSortPixelLevelTool = pixel_level_tool.app:main
