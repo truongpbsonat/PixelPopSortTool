@@ -58,41 +58,50 @@ def make_full_level() -> PixelLevelData:
     )
 
 
-def test_all_supported_effects_and_obstacles_round_trip_with_unity_types():
+def test_all_supported_effects_and_obstacles_round_trip_with_type_names():
     written = json.loads(dumps_level(make_full_level()))
-    effects = written["gridCells"][1]["effects"]
-    assert [effect["$type"].split(".")[-1].split(",")[0] for effect in effects] == [
-        "FrozenCellEffectData", "HiddenCellEffectData", "ArrowLockCellEffectData",
-        "KeyForLockedGateCellEffectData", "ScissorForWoolCrateCellEffectData",
+    box_grid = written["boxGrid"]
+
+    effects = box_grid["gridCells"][1]["effects"]
+    assert [effect["type"] for effect in effects] == [
+        "Frozen", "Hidden", "ArrowLock", "KeyForLockedGate", "ScissorForWoolCrate",
     ]
-    assert [item["id"] for item in written["gridCells"]] == [301, 300]
-    assert written["obstacles"][0]["targetIds"] == [300, 301]
-    assert [item["id"] for item in written["obstacles"]] == [3001, 5001, 6001, 7001, 8001, 6501, 8501]
-    assert written["obstacles"][-1]["layers"][0]["cells"][0]["id"] == 302
+    # Effects carry only their own payload (name-encoded enums), no $type.
+    assert effects[2] == {"type": "ArrowLock", "requiredDirection": "Right"}
+    assert effects[3] == {"type": "KeyForLockedGate", "lockKeyGate": "Blue"}
+    assert effects[4] == {"type": "ScissorForWoolCrate", "scissorColor": "Green"}
+
+    assert [item["id"] for item in box_grid["gridCells"]] == [301, 300]
+    assert [obstacle["type"] for obstacle in box_grid["obstacles"]] == [
+        "LinkedContainer", "LargeBlock", "Pins", "LockedGate", "WoolCrate", "ColorGate", "Elevator",
+    ]
+    assert box_grid["obstacles"][0]["targetIds"] == [300, 301]
+    assert box_grid["obstacles"][2]["requiredDirection"] == "Right"
+    assert box_grid["obstacles"][3]["lockKeyGate"] == "Blue"
+    assert box_grid["obstacles"][4]["ropes"] == ["Green"]
+    assert box_grid["obstacles"][5]["requiredColor"] == "Blue"
+    assert [item["id"] for item in box_grid["obstacles"]] == [3001, 5001, 6001, 7001, 8001, 6501, 8501]
+    assert box_grid["obstacles"][-1]["layers"][0]["cells"][0]["id"] == 302
 
     loaded = level_from_dict(written)
     assert len(loaded.grid_cells[1].effects) == 5
     assert isinstance(loaded.obstacles[0], LinkedContainerObstacleData)
     assert isinstance(loaded.obstacles[-1], ElevatorObstacleData)
-    assert json.loads(dumps_level(loaded))["obstacles"][0]["targetIds"] == [300, 301]
+    assert json.loads(dumps_level(loaded))["boxGrid"]["obstacles"][0]["targetIds"] == [300, 301]
 
 
-@pytest.mark.parametrize("type_name", [
-    "NewRefactor.KeyForCargoCellEffectData, Assembly-CSharp",
-    "NewRefactor.UnknownCellEffectData, Assembly-CSharp",
-])
+@pytest.mark.parametrize("type_name", ["KeyForCargo", "Bogus"])
 def test_unsupported_effects_fail_fast(type_name):
     data = json.loads(dumps_level(PixelLevelData(grid_cells=[BoxCellData(0, 0)])))
-    data["gridCells"][0]["effects"] = [{"$type": type_name}]
+    data["boxGrid"]["gridCells"][0]["effects"] = [{"type": type_name}]
     with pytest.raises(UnsupportedScopeError):
         level_from_dict(data)
 
 
-def test_linked_cargo_fails_fast():
-    level = PixelLevelData(grid_cells=[BoxCellData(0, 0)])
-    data = json.loads(dumps_level(level))
-    data["obstacles"] = [{"$type": "NewRefactor.LinkedCargoObstacleData, Assembly-CSharp", "targetIds": [], "id": 1}]
-    with pytest.raises(UnsupportedScopeError, match="LinkedCargo"):
+def test_unknown_obstacle_fails_fast():
+    data = json.loads(dumps_level(PixelLevelData(grid_cells=[BoxCellData(0, 0)])))
+    data["boxGrid"]["obstacles"] = [{"type": "LinkedCargo", "targetIds": [], "id": 1}]
+    with pytest.raises(UnsupportedScopeError):
         level_from_dict(data)
 
 

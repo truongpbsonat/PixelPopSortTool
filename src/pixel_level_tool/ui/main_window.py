@@ -30,6 +30,7 @@ from pixel_level_tool.domain.enums import EMPTY_COLOR_ID
 from pixel_level_tool.domain.level_models import PixelGridData, PixelLevelData
 from pixel_level_tool.services.image_importer import ImageImportError, import_image_to_color_ids
 from pixel_level_tool.services.legacy_level_importer import LegacyLevelImportError, import_legacy_pixel_grid
+from pixel_level_tool.services.level_converter import LevelConvertError, convert_file, convert_folder
 from pixel_level_tool.services.level_serializer import LevelSerializationError, load_level, save_level
 from pixel_level_tool.services.level_validator import LevelValidator
 from pixel_level_tool.services.recent_files_service import RecentFilesService
@@ -82,6 +83,8 @@ class MainWindow(QMainWindow):
         self.next_level_action = QAction("Next", self)
         self.save_action = QAction("Save", self)
         self.save_as_action = QAction("Save As", self)
+        self.convert_file_action = QAction("Convert File", self)
+        self.convert_all_action = QAction("Convert All", self)
         self.validate_action = QAction("Validate", self)
         self.undo_action = QAction("Undo", self)
         self.redo_action = QAction("Redo", self)
@@ -93,6 +96,8 @@ class MainWindow(QMainWindow):
             self.next_level_action,
             self.save_action,
             self.save_as_action,
+            self.convert_file_action,
+            self.convert_all_action,
             self.validate_action,
             self.undo_action,
             self.redo_action,
@@ -135,6 +140,12 @@ class MainWindow(QMainWindow):
         for action, description in action_tooltips:
             action.setToolTip(f"{description} ({action.shortcut().toString()})")
         self.validate_action.setToolTip("Validate the current level")
+        self.convert_file_action.setToolTip(
+            "Convert one old-format level file to the new format in place (creates a .bak backup)"
+        )
+        self.convert_all_action.setToolTip(
+            "Convert every level file in a folder to the new format in place (creates .bak backups)"
+        )
 
         meta = QWidget()
         meta_layout = QGridLayout(meta)
@@ -150,18 +161,26 @@ class MainWindow(QMainWindow):
         self.board_spin.setRange(0, 99999)
         self.difficulty_spin = QSpinBox()
         self.difficulty_spin.setRange(0, 99999)
+        self.time_spin = QSpinBox()
+        self.time_spin.setRange(0, 99999)
+        self.piece_spin = QSpinBox()
+        self.piece_spin.setRange(0, 99999)
         meta_layout.addWidget(QLabel("Level"), 0, 0)
         meta_layout.addWidget(self.level_spin, 0, 1)
         meta_layout.addWidget(self.load_level_button, 0, 2)
         meta_layout.addWidget(QLabel("Game Mode"), 0, 3)
         meta_layout.addWidget(self.game_mode_spin, 0, 4)
+        meta_layout.addWidget(QLabel("Time"), 0, 5)
+        meta_layout.addWidget(self.time_spin, 0, 6)
         meta_layout.addWidget(QLabel("Map Type"), 1, 0)
         meta_layout.addWidget(self.map_type_spin, 1, 1)
         meta_layout.addWidget(QLabel("Board"), 1, 2)
         meta_layout.addWidget(self.board_spin, 1, 3)
         meta_layout.addWidget(QLabel("Difficulty"), 1, 4)
         meta_layout.addWidget(self.difficulty_spin, 1, 5)
-        meta_layout.setColumnStretch(5, 1)
+        meta_layout.addWidget(QLabel("Piece"), 1, 6)
+        meta_layout.addWidget(self.piece_spin, 1, 7)
+        meta_layout.setColumnStretch(7, 1)
 
         self.color_palette = ColorPalette()
         self.shape_palette = ShapePalette()
@@ -346,6 +365,8 @@ class MainWindow(QMainWindow):
         self.next_level_action.triggered.connect(self.open_next_level)
         self.save_action.triggered.connect(self.save)
         self.save_as_action.triggered.connect(self.save_as)
+        self.convert_file_action.triggered.connect(self.convert_level_file)
+        self.convert_all_action.triggered.connect(self.convert_level_folder)
         self.validate_action.triggered.connect(self.validate)
         self.undo_action.triggered.connect(self.commands.undo)
         self.redo_action.triggered.connect(self.commands.redo)
@@ -354,6 +375,8 @@ class MainWindow(QMainWindow):
             self.map_type_spin,
             self.board_spin,
             self.difficulty_spin,
+            self.time_spin,
+            self.piece_spin,
         ):
             spin_box.valueChanged.connect(self._metadata_changed)
         self.color_palette.color_changed.connect(self._replace_color_from_palette)
@@ -433,6 +456,8 @@ class MainWindow(QMainWindow):
             ("map_type", self.map_type_spin.value()),
             ("board", self.board_spin.value()),
             ("difficulty", self.difficulty_spin.value()),
+            ("time", self.time_spin.value()),
+            ("piece", self.piece_spin.value()),
         )
         for attribute, value in metadata_values:
             if getattr(self.level, attribute) != value:
@@ -458,6 +483,8 @@ class MainWindow(QMainWindow):
             self.map_type_spin,
             self.board_spin,
             self.difficulty_spin,
+            self.time_spin,
+            self.piece_spin,
         ):
             widget.blockSignals(True)
         self.level_spin.setValue(self.level.level)
@@ -465,12 +492,16 @@ class MainWindow(QMainWindow):
         self.map_type_spin.setValue(self.level.map_type)
         self.board_spin.setValue(self.level.board)
         self.difficulty_spin.setValue(self.level.difficulty)
+        self.time_spin.setValue(self.level.time)
+        self.piece_spin.setValue(self.level.piece)
         for widget in (
             self.level_spin,
             self.game_mode_spin,
             self.map_type_spin,
             self.board_spin,
             self.difficulty_spin,
+            self.time_spin,
+            self.piece_spin,
         ):
             widget.blockSignals(False)
         self.box_editor.set_level(self.level)
@@ -520,6 +551,8 @@ class MainWindow(QMainWindow):
             grid_cols=dialog.box_cols.value(),
             level=dialog.level.value(),
             level_name=f"Pixel Level {dialog.level.value()}",
+            time=dialog.time.value(),
+            piece=dialog.piece.value(),
             pixel_grid=PixelGridData(dialog.pixel_width.value(), dialog.pixel_height.value()),
         )
         self.path = None
@@ -915,6 +948,62 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Imported {pixel_grid.width}x{pixel_grid.height} pixel grid ({painted_count} painted pixels)",
             5000,
+        )
+
+    def convert_level_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Convert old-format level file",
+            self.settings.get("last_convert_dir", self.settings.get("last_open_dir", "")),
+            "JSON (*.json)",
+        )
+        if not path:
+            return
+        source = Path(path)
+        if QMessageBox.question(
+            self,
+            "Convert level file",
+            f"Convert and overwrite '{source.name}' with the new format?\nA .bak backup will be created.",
+        ) != QMessageBox.Yes:
+            return
+        try:
+            convert_file(source)
+        except (LevelConvertError, LevelSerializationError, OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Convert failed", str(exc))
+            return
+        self.settings.set("last_convert_dir", str(source.parent))
+        self.statusBar().showMessage(f"Converted {source.name} to the new format", 5000)
+        if not self.dirty and self.path is not None and self.path == source:
+            self._load_path(source, from_level_folder=self.auto_level_save)
+
+    def convert_level_folder(self) -> None:
+        start_dir = self.settings.get("last_convert_dir", self.settings.get("last_level_folder", ""))
+        folder = QFileDialog.getExistingDirectory(self, "Convert all levels in folder", start_dir)
+        if not folder:
+            return
+        folder_path = Path(folder)
+        json_count = len(list(folder_path.glob("*.json")))
+        if json_count == 0:
+            QMessageBox.information(self, "Convert all", "No .json files found in the selected folder.")
+            return
+        if QMessageBox.question(
+            self,
+            "Convert all levels",
+            f"Convert and overwrite up to {json_count} .json file(s) in\n{folder_path}\n"
+            "with the new format?\n.bak backups will be created.",
+        ) != QMessageBox.Yes:
+            return
+        summary = convert_folder(folder_path)
+        self.settings.set("last_convert_dir", str(folder_path))
+        lines = [f"Converted {len(summary.converted)} file(s)."]
+        if summary.skipped:
+            lines.append(f"Skipped {len(summary.skipped)}:")
+            lines.extend(f"  • {path.name}: {reason}" for path, reason in summary.skipped[:20])
+            if len(summary.skipped) > 20:
+                lines.append(f"  … and {len(summary.skipped) - 20} more.")
+        QMessageBox.information(self, "Convert all", "\n".join(lines))
+        self.statusBar().showMessage(
+            f"Converted {len(summary.converted)} file(s), skipped {len(summary.skipped)}", 5000
         )
 
     def dragEnterEvent(self, event) -> None:

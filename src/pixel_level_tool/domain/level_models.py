@@ -300,11 +300,14 @@ class PixelLevelData:
     level_grid_version: int = 1
     map_type: int = 0
     board: int = 1
+    time: int = 60
+    piece: int = 5
     grid_cells: list[BoxCellData] = field(default_factory=list)
     pixel_grid: PixelGridData = field(default_factory=PixelGridData)
-    game_mode: int = int(GameMode.Pixel)
-    difficulty: int = int(LevelDifficulty.Normal)
+    game_mode: int = int(GameMode.Classic)
+    difficulty: int = int(LevelDifficulty.Easy)
     category: int = 0
+    mechanics: list[str] = field(default_factory=list)
     grid_lanes: list[object] = field(default_factory=list)
     obstacles: list[ObstacleData] = field(default_factory=list)
     extra_fields: dict[str, object] = field(default_factory=dict)

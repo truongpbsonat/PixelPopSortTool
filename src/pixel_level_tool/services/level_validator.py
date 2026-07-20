@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from pixel_level_tool.domain.enums import CellShape, Direction, EMPTY_COLOR_ID, ItemColor, LockKeyGate, WoolCrateColor
+from pixel_level_tool.domain.enums import CellShape, Direction, EMPTY_COLOR_ID, GameMode, ItemColor, LockKeyGate, WoolCrateColor
 from pixel_level_tool.domain.level_models import (
     ArrowLockCellEffectData,
     BoxCellData,
@@ -58,8 +58,10 @@ class LevelValidator:
 
         if level.level <= 0:
             error("level must be greater than 0.")
-        if level.game_mode != 1:
-            error("gameMode must be 1 for Pixel mode.")
+        if level.game_mode != int(GameMode.Classic):
+            # Pop-Sort-2 only defines GameMode.Classic and overwrites gameMode at
+            # load time, so this is advisory rather than blocking.
+            warning("gameMode is not Classic; verify this matches the target project.")
         if level.grid_rows <= 0 or level.grid_cols <= 0:
             error("Box grid dimensions must be greater than 0.")
         if not level.grid_cells:
