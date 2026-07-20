@@ -11,7 +11,7 @@ from pixel_level_tool.services.level_converter import (
 
 
 def _legacy_pixel_level(level: int = 1) -> dict:
-    """A minimal, balanced legacy (NewRefactor.*) Pixel level."""
+    """A minimal, balanced legacy (NewRefactor.* + $type) Pixel level."""
     return {
         "pixelGrid": {
             "width": 3,
@@ -52,17 +52,28 @@ def _write(path, data) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_convert_file_migrates_namespace_and_fields_in_place(tmp_path):
+def test_convert_file_migrates_to_new_format_in_place(tmp_path):
     target = tmp_path / "1.json"
     _write(target, _legacy_pixel_level())
 
     convert_file(target)
 
-    written = json.loads(target.read_text(encoding="utf-8"))
-    assert written["gridCells"][0]["$type"] == "Gameplay.MarbleFlow.Level.CellData, Assembly-CSharp"
+    text = target.read_text(encoding="utf-8")
+    assert "$type" not in text
+    written = json.loads(text)
+
+    cell = written["boxGrid"]["gridCells"][0]
+    assert cell["type"] == "Normal"
+    assert cell["shape"] == "Rectangle_3x1"
+    assert cell["colorList"] == ["Red"]
+
     assert written["time"] == 60
     assert written["piece"] == 5
-    assert "gridLanes" not in written
+    assert written["mapType"] == "None"
+    assert written["gameMode"] == "Classic"
+    assert written["difficulty"] == "Easy"
+    for dropped in ("gridLanes", "levelName", "levelGridVersion"):
+        assert dropped not in written
 
 
 def test_convert_file_creates_backup(tmp_path):
@@ -108,7 +119,7 @@ def test_convert_folder_converts_pixel_and_skips_others(tmp_path):
     assert {path.name for path, _ in summary.skipped} == {"3.json", "4.json", "broken.json"}
 
     written = json.loads((tmp_path / "1.json").read_text(encoding="utf-8"))
-    assert written["gridCells"][0]["$type"] == "Gameplay.MarbleFlow.Level.CellData, Assembly-CSharp"
+    assert written["boxGrid"]["gridCells"][0]["type"] == "Normal"
 
 
 def test_convert_folder_ignores_bak_files(tmp_path):

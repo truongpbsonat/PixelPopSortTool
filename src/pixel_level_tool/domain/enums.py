@@ -81,12 +81,52 @@ class ObstacleType(IntEnum):
     Elevator = 8
 
 
+class MapType(IntEnum):
+    None_ = 0
+    Map1 = 1
+    Map2 = 2
+    Map3 = 3
+    Map4 = 4
+    Map5 = 5
+
+
 class GameMode(IntEnum):
-    Pixel = 1
+    Classic = 0
 
 
 class LevelDifficulty(IntEnum):
-    Normal = 0
+    Easy = 0
+    Medium = 1
+    Hard = 2
+    SuperHard = 3
+
+
+def enum_name(member: IntEnum) -> str:
+    """Serialized enum name expected by Pop-Sort-2 (``None_`` maps back to ``None``)."""
+    return member.name.removesuffix("_")
+
+
+def enum_name_from_value(enum_type: type[IntEnum], value: int, fallback: IntEnum) -> str:
+    """Enum name for an int the UI may set freely; unknown values clamp to ``fallback``."""
+    try:
+        member = enum_type(value)
+    except ValueError:
+        member = fallback
+    return enum_name(member)
+
+
+def enum_value_from_name(enum_type: type[IntEnum], name: str, fallback: IntEnum) -> int:
+    """Parse a Pop-Sort-2 enum name back to its int value (``None`` -> ``None_``)."""
+    try:
+        return int(enum_type[name])
+    except KeyError:
+        pass
+    if name == "None":
+        try:
+            return int(enum_type["None_"])
+        except KeyError:
+            pass
+    return int(fallback)
 
 
 COLOR_NAMES: dict[ItemColor, str] = {

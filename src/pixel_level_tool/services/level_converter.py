@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pixel_level_tool.domain.enums import EMPTY_COLOR_ID
-from pixel_level_tool.services.level_serializer import load_level, save_level
+from pixel_level_tool.services.level_serializer import load_legacy_level, save_level
 
 
 class LevelConvertError(ValueError):
@@ -18,14 +18,15 @@ class ConvertSummary:
 
 
 def _load_convertible(path: Path):
-    """Load a level that is a supported, Pixel-only level worth converting.
+    """Load a legacy level that is a supported, Pixel-only level worth converting.
 
-    ``load_level`` already accepts both the legacy (NewRefactor.*) and current
-    (Gameplay.MarbleFlow.*) namespaces and fail-fast rejects cargo/pixel-modifier
-    subtypes. Here we additionally reject Classic levels that merely round-trip
-    through the reader without being a Pixel level.
+    ``load_legacy_level`` reads the old $type layout (both the NewRefactor.* and
+    the intermediate Gameplay.MarbleFlow.* spellings) and fail-fast rejects
+    cargo/pixel-modifier subtypes. Here we additionally reject Classic levels that
+    merely round-trip through the reader without being a Pixel level. The result is
+    then written back through ``save_level`` in the current Pop-Sort-2 format.
     """
-    level = load_level(path)
+    level = load_legacy_level(path)
     if level.grid_lanes:
         raise LevelConvertError("Level has cargo lanes (Classic level); not a Pixel level.")
     if not any(color_id != EMPTY_COLOR_ID for color_id in level.pixel_grid.color_ids):
