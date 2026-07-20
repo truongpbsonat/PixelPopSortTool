@@ -59,7 +59,9 @@ class LevelValidator:
         if level.level <= 0:
             error("level must be greater than 0.")
         if level.game_mode != 1:
-            error("gameMode must be 1 for Pixel mode.")
+            # Pop-Sort-2 overwrites gameMode at load time and stores Pixel levels
+            # under the Classic folder, so this is advisory rather than blocking.
+            warning("gameMode is not 1; verify this matches the target project.")
         if level.grid_rows <= 0 or level.grid_cols <= 0:
             error("Box grid dimensions must be greater than 0.")
         if not level.grid_cells:

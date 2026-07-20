@@ -29,23 +29,56 @@ from pixel_level_tool.domain.level_models import (
 )
 
 
-CELL_TYPE_NAME = "NewRefactor.CellData, Assembly-CSharp"
-TUNNEL_TYPE_NAME = "NewRefactor.TunnelData, Assembly-CSharp"
+# The tool writes the Pop-Sort-2 (Gameplay.MarbleFlow.*) namespace. Reading also
+# accepts the Marble-Sort (NewRefactor.*) namespace so legacy files still open and
+# can be converted forward.
+NEW_NAMESPACE = "Gameplay.MarbleFlow.Level."
+LEGACY_NAMESPACE = "NewRefactor."
+
+
+def _legacy(type_name: str) -> str:
+    return type_name.replace(NEW_NAMESPACE, LEGACY_NAMESPACE, 1)
+
+
+CELL_TYPE_NAME = "Gameplay.MarbleFlow.Level.CellData, Assembly-CSharp"
+TUNNEL_TYPE_NAME = "Gameplay.MarbleFlow.Level.TunnelData, Assembly-CSharp"
+CELL_TYPE_NAMES_READ = {CELL_TYPE_NAME, _legacy(CELL_TYPE_NAME)}
+TUNNEL_TYPE_NAMES_READ = {TUNNEL_TYPE_NAME, _legacy(TUNNEL_TYPE_NAME)}
 EFFECT_TYPE_NAMES = {
-    FrozenCellEffectData: "NewRefactor.FrozenCellEffectData, Assembly-CSharp",
-    HiddenCellEffectData: "NewRefactor.HiddenCellEffectData, Assembly-CSharp",
-    ArrowLockCellEffectData: "NewRefactor.ArrowLockCellEffectData, Assembly-CSharp",
-    KeyForLockedGateCellEffectData: "NewRefactor.KeyForLockedGateCellEffectData, Assembly-CSharp",
-    ScissorForWoolCrateCellEffectData: "NewRefactor.ScissorForWoolCrateCellEffectData, Assembly-CSharp",
+    FrozenCellEffectData: "Gameplay.MarbleFlow.Level.FrozenCellEffectData, Assembly-CSharp",
+    HiddenCellEffectData: "Gameplay.MarbleFlow.Level.HiddenCellEffectData, Assembly-CSharp",
+    ArrowLockCellEffectData: "Gameplay.MarbleFlow.Level.ArrowLockCellEffectData, Assembly-CSharp",
+    KeyForLockedGateCellEffectData: "Gameplay.MarbleFlow.Level.KeyForLockedGateCellEffectData, Assembly-CSharp",
+    ScissorForWoolCrateCellEffectData: "Gameplay.MarbleFlow.Level.ScissorForWoolCrateCellEffectData, Assembly-CSharp",
 }
 OBSTACLE_TYPE_NAMES = {
-    LinkedContainerObstacleData: "NewRefactor.LinkedContainerObstacleData, Assembly-CSharp",
-    LargeBlockObstacleData: "NewRefactor.LargeBlockObstacleData, Assembly-CSharp",
-    PinsObstacleData: "NewRefactor.PinsObstacleData, Assembly-CSharp",
-    LockedGateObstacleData: "NewRefactor.LockedGateObstacleData, Assembly-CSharp",
-    WoolCrateObstacleData: "NewRefactor.WoolCrateObstacleData, Assembly-CSharp",
-    ColorGateObstacleData: "NewRefactor.ColorGateObstacleData, Assembly-CSharp",
-    ElevatorObstacleData: "NewRefactor.ElevatorObstacleData, Assembly-CSharp",
+    LinkedContainerObstacleData: "Gameplay.MarbleFlow.Level.LinkedContainerObstacleData, Assembly-CSharp",
+    LargeBlockObstacleData: "Gameplay.MarbleFlow.Level.LargeBlockObstacleData, Assembly-CSharp",
+    PinsObstacleData: "Gameplay.MarbleFlow.Level.PinsObstacleData, Assembly-CSharp",
+    LockedGateObstacleData: "Gameplay.MarbleFlow.Level.LockedGateObstacleData, Assembly-CSharp",
+    WoolCrateObstacleData: "Gameplay.MarbleFlow.Level.WoolCrateObstacleData, Assembly-CSharp",
+    ColorGateObstacleData: "Gameplay.MarbleFlow.Level.ColorGateObstacleData, Assembly-CSharp",
+    ElevatorObstacleData: "Gameplay.MarbleFlow.Level.ElevatorObstacleData, Assembly-CSharp",
+}
+# $type -> Python class, accepting both the current and the legacy namespace.
+EFFECT_TYPES_READ = {
+    type_name: effect_type
+    for effect_type, new_name in EFFECT_TYPE_NAMES.items()
+    for type_name in (new_name, _legacy(new_name))
+}
+OBSTACLE_TYPES_READ = {
+    type_name: obstacle_type
+    for obstacle_type, new_name in OBSTACLE_TYPE_NAMES.items()
+    for type_name in (new_name, _legacy(new_name))
+}
+# Cargo is out of scope in both namespaces; reject either spelling explicitly.
+CARGO_EFFECT_TYPE_NAMES = {
+    "Gameplay.MarbleFlow.Level.KeyForCargoCellEffectData, Assembly-CSharp",
+    "NewRefactor.KeyForCargoCellEffectData, Assembly-CSharp",
+}
+CARGO_OBSTACLE_TYPE_NAMES = {
+    "Gameplay.MarbleFlow.Level.LinkedCargoObstacleData, Assembly-CSharp",
+    "NewRefactor.LinkedCargoObstacleData, Assembly-CSharp",
 }
 ROOT_KEYS = {
     "pixelGrid",
@@ -55,6 +88,8 @@ ROOT_KEYS = {
     "gridRows",
     "gridCols",
     "board",
+    "time",
+    "piece",
     "gridCells",
     "gridLanes",
     "obstacles",
@@ -176,10 +211,9 @@ def level_to_dict(level: PixelLevelData, *, assign_ids: bool = True) -> dict[str
             "gridRows": snapshot.grid_rows,
             "gridCols": snapshot.grid_cols,
             "board": snapshot.board,
+            "time": snapshot.time,
+            "piece": snapshot.piece,
             "gridCells": [cell_to_dict(cell) for cell in snapshot.grid_cells],
-            # Cargo lanes are not edited by this tool, but must survive a
-            # load/save round trip unchanged.
-            "gridLanes": snapshot.grid_lanes,
             "obstacles": [obstacle_to_dict(obstacle, uid_to_id) for obstacle in snapshot.obstacles],
             "gameMode": snapshot.game_mode,
             "difficulty": snapshot.difficulty,
@@ -199,17 +233,18 @@ def _require_int_enum(enum_type: type, value: object, field: str) -> Any:
 
 def effect_from_dict(data: dict[str, Any]) -> object:
     type_name = data.get("$type")
-    if type_name == EFFECT_TYPE_NAMES[FrozenCellEffectData]:
+    effect_type = EFFECT_TYPES_READ.get(type_name)
+    if effect_type is FrozenCellEffectData:
         return FrozenCellEffectData(int(data.get("frozenCount", 0)))
-    if type_name == EFFECT_TYPE_NAMES[HiddenCellEffectData]:
+    if effect_type is HiddenCellEffectData:
         return HiddenCellEffectData()
-    if type_name == EFFECT_TYPE_NAMES[ArrowLockCellEffectData]:
+    if effect_type is ArrowLockCellEffectData:
         return ArrowLockCellEffectData(_require_int_enum(Direction, data.get("requiredDirection", 0), "requiredDirection"))
-    if type_name == EFFECT_TYPE_NAMES[KeyForLockedGateCellEffectData]:
+    if effect_type is KeyForLockedGateCellEffectData:
         return KeyForLockedGateCellEffectData(_require_int_enum(LockKeyGate, data.get("lockKeyGate", 0), "lockKeyGate"))
-    if type_name == EFFECT_TYPE_NAMES[ScissorForWoolCrateCellEffectData]:
+    if effect_type is ScissorForWoolCrateCellEffectData:
         return ScissorForWoolCrateCellEffectData(_require_int_enum(WoolCrateColor, data.get("scissorColor", 0), "scissorColor"))
-    if type_name == "NewRefactor.KeyForCargoCellEffectData, Assembly-CSharp":
+    if type_name in CARGO_EFFECT_TYPE_NAMES:
         raise UnsupportedScopeError("KeyForCargo is cargo-related and is not supported by this tool.")
     raise UnsupportedScopeError(f"Unsupported cell effect type: {type_name!r}")
 
@@ -224,7 +259,7 @@ def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
         "id": int(data.get("id", 0)),
         "is_active": bool(data.get("isActive", True)),
     }
-    if type_name == TUNNEL_TYPE_NAME:
+    if type_name in TUNNEL_TYPE_NAMES_READ:
         stored_data = data.get("storedCells")
         if stored_data is None:
             stored_data = []
@@ -238,7 +273,7 @@ def cell_from_dict(data: dict[str, Any]) -> BoxCellData:
             color=_require_int_enum(ItemColor, data.get("color", int(ItemColor.Blue)), "color"),
             stored_cells=stored_cells,
         )
-    if type_name != CELL_TYPE_NAME:
+    if type_name not in CELL_TYPE_NAMES_READ:
         raise UnsupportedScopeError(f"Unsupported grid cell type: {type_name!r}")
     colors = data.get("colorList")
     if not isinstance(colors, list) or len(colors) != 1:
@@ -272,25 +307,26 @@ def obstacle_from_dict(data: dict[str, Any], id_to_uid: dict[int, str]) -> objec
         "width": int(data.get("width", 1)),
         "height": int(data.get("height", 1)),
     }
-    if type_name == OBSTACLE_TYPE_NAMES[LinkedContainerObstacleData]:
+    obstacle_type = OBSTACLE_TYPES_READ.get(type_name)
+    if obstacle_type is LinkedContainerObstacleData:
         return LinkedContainerObstacleData(target_uids(), obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[PinsObstacleData]:
+    if obstacle_type is PinsObstacleData:
         return PinsObstacleData(target_uids(), _require_int_enum(Direction, data.get("requiredDirection", 0), "requiredDirection"), obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[LargeBlockObstacleData]:
+    if obstacle_type is LargeBlockObstacleData:
         return LargeBlockObstacleData(**common, count=int(data.get("count", 1)), id=obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[LockedGateObstacleData]:
+    if obstacle_type is LockedGateObstacleData:
         return LockedGateObstacleData(**common, lock_key_gate=_require_int_enum(LockKeyGate, data.get("lockKeyGate", 0), "lockKeyGate"), priority=int(data.get("priority", 0)), id=obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[WoolCrateObstacleData]:
+    if obstacle_type is WoolCrateObstacleData:
         ropes = [_require_int_enum(WoolCrateColor, value, "ropes") for value in data.get("ropes") or []]
         return WoolCrateObstacleData(**common, ropes=ropes, priority=int(data.get("priority", 0)), id=obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[ColorGateObstacleData]:
+    if obstacle_type is ColorGateObstacleData:
         return ColorGateObstacleData(**common, count=int(data.get("count", 1)), required_color=_require_int_enum(ItemColor, data.get("requiredColor", 0), "requiredColor"), id=obstacle_id)
-    if type_name == OBSTACLE_TYPE_NAMES[ElevatorObstacleData]:
+    if obstacle_type is ElevatorObstacleData:
         layers = []
         for layer_data in data.get("layers") or []:
             layers.append(ElevatorLayerData([cell_from_dict(cell) for cell in layer_data.get("cells") or []]))
         return ElevatorObstacleData(**common, layers=layers, id=obstacle_id)
-    if type_name == "NewRefactor.LinkedCargoObstacleData, Assembly-CSharp":
+    if type_name in CARGO_OBSTACLE_TYPE_NAMES:
         raise UnsupportedScopeError("LinkedCargo is cargo-related and is not supported by this tool.")
     raise UnsupportedScopeError(f"Unsupported source-grid obstacle type: {type_name!r}")
 
@@ -334,6 +370,8 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
         grid_rows=int(data.get("gridRows", 10)),
         grid_cols=int(data.get("gridCols", 10)),
         board=int(data.get("board", 1)),
+        time=int(data.get("time", 60)),
+        piece=int(data.get("piece", 5)),
         grid_cells=cells,
         grid_lanes=grid_lanes,
         obstacles=obstacles,

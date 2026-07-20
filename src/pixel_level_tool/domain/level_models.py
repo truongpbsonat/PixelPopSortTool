@@ -300,6 +300,8 @@ class PixelLevelData:
     level_grid_version: int = 1
     map_type: int = 0
     board: int = 1
+    time: int = 60
+    piece: int = 5
     grid_cells: list[BoxCellData] = field(default_factory=list)
     pixel_grid: PixelGridData = field(default_factory=PixelGridData)
     game_mode: int = int(GameMode.Pixel)

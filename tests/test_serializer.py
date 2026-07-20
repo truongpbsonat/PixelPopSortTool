@@ -20,13 +20,52 @@ def test_serializer_writes_unity_type_and_int_enums():
     data = json.loads(content)
     cell = data["gridCells"][0]
     assert cell["$type"] == CELL_TYPE_NAME
+    assert CELL_TYPE_NAME == "Gameplay.MarbleFlow.Level.CellData, Assembly-CSharp"
     assert cell["shape"] == 3
     assert cell["direction"] == 0
     assert cell["colorList"] == [0]
     assert cell["effects"] is None
-    assert data["gridLanes"] == []
+    # The new format has no gridLanes; it must not be written.
+    assert "gridLanes" not in data
     assert data["obstacles"] == []
+    assert data["time"] == 60
+    assert data["piece"] == 5
     assert '"colorList": [0]' in content
+
+
+def test_time_and_piece_round_trip():
+    level = make_level()
+    level.time = 45
+    level.piece = 7
+    loaded = level_from_dict(json.loads(dumps_level(level)))
+    assert loaded.time == 45
+    assert loaded.piece == 7
+
+
+def test_load_defaults_time_and_piece_when_absent():
+    data = json.loads(dumps_level(make_level()))
+    del data["time"]
+    del data["piece"]
+    loaded = level_from_dict(data)
+    assert loaded.time == 60
+    assert loaded.piece == 5
+
+
+def test_load_accepts_legacy_newrefactor_namespace():
+    data = json.loads(dumps_level(make_level()))
+    data["gridCells"][0]["$type"] = "NewRefactor.CellData, Assembly-CSharp"
+    data["gridCells"][0]["effects"] = [
+        {"$type": "NewRefactor.FrozenCellEffectData, Assembly-CSharp", "frozenCount": 1}
+    ]
+    loaded = level_from_dict(data)
+    written = json.loads(dumps_level(loaded))
+    assert loaded.grid_cells[0].effects == [FrozenCellEffectData(1)]
+    # Loading a legacy file and saving re-emits the current namespace.
+    assert written["gridCells"][0]["$type"] == CELL_TYPE_NAME
+    assert (
+        written["gridCells"][0]["effects"][0]["$type"]
+        == "Gameplay.MarbleFlow.Level.FrozenCellEffectData, Assembly-CSharp"
+    )
 
 
 def test_round_trip_preserves_core_data():
@@ -48,15 +87,17 @@ def test_load_allows_missing_pixel_grid():
     assert loaded.grid_cells[0].shape == CellShape.Rectangle_3x1
 
 
-def test_load_and_save_preserve_cargo_grid_lanes():
+def test_load_reads_grid_lanes_but_save_omits_them():
     data = json.loads(dumps_level(make_level()))
     data["gridLanes"] = [{"laneId": 1, "cells": [0, 1]}]
 
     loaded = level_from_dict(data)
     written = json.loads(dumps_level(loaded))
 
+    # Legacy cargo lanes are still read (so the value survives inspection) but
+    # the new format drops them on save.
     assert loaded.grid_lanes == data["gridLanes"]
-    assert written["gridLanes"] == data["gridLanes"]
+    assert "gridLanes" not in written
 
 
 def test_load_preserves_typed_cell_effects():
@@ -111,7 +152,7 @@ def test_tunnel_cell_round_trip_preserves_color_direction_and_stored_cells():
     stored = {
         "$type": CELL_TYPE_NAME,
         "colorList": [int(ItemColor.Green)],
-        "effects": [{"$type": "NewRefactor.FrozenCellEffectData, Assembly-CSharp", "frozenCount": 2}],
+        "effects": [{"$type": "Gameplay.MarbleFlow.Level.FrozenCellEffectData, Assembly-CSharp", "frozenCount": 2}],
         "gridX": 0,
         "gridY": 0,
         "shape": int(CellShape.Rectangle_3x1),
