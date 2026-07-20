@@ -198,6 +198,13 @@ def _require_int_enum(enum_type: type, value: object, field: str) -> Any:
         raise LevelSerializationError(f"Invalid {field}: {value!r}") from exc
 
 
+def _safe_int(value: object, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def effect_from_dict(data: dict[str, Any]) -> object:
     type_name = data.get("$type")
     if type_name == EFFECT_TYPE_NAMES[FrozenCellEffectData]:
@@ -299,6 +306,12 @@ def obstacle_from_dict(data: dict[str, Any], id_to_uid: dict[int, str]) -> objec
 def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
     if "$type" in data:
         raise LevelSerializationError("Root $type discriminators are not supported.")
+    game_mode_raw = data.get("gameMode", 1)
+    if isinstance(game_mode_raw, str) and not game_mode_raw.lstrip("-").isdigit():
+        raise UnsupportedScopeError(
+            f"This file is a {game_mode_raw!r} mode level, not a Pixel level. "
+            "This tool only edits Pixel mode levels."
+        )
     try:
         level_grid_version = int(data.get("levelGridVersion", 1))
     except (TypeError, ValueError) as exc:
@@ -342,7 +355,7 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
         game_mode=int(data.get("gameMode", 1)),
         difficulty=int(data.get("difficulty", 0)),
         level=int(data.get("level", 1)),
-        category=int(data.get("category", 0)),
+        category=_safe_int(data.get("category", 0), default=0),
         extra_fields={key: value for key, value in data.items() if key not in ROOT_KEYS},
     )
     return level
