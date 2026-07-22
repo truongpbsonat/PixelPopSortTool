@@ -80,3 +80,43 @@ def test_rejects_when_there_are_not_enough_unused_current_colors():
                 }
             }
         )
+
+
+def test_imports_sparse_map_array_as_row_major_pixel_grid():
+    grid = legacy_pixel_grid_from_dict(
+        {
+            "map": [
+                {"r": 0, "c": 0, "color": 2},
+                {"r": 0, "c": 2, "color": 8},
+                {"r": 1, "c": 1, "color": 12},
+            ]
+        }
+    )
+
+    assert grid.width == 3
+    assert grid.height == 2
+    assert grid.color_ids == [2, EMPTY_COLOR_ID, 8, EMPTY_COLOR_ID, 12, EMPTY_COLOR_ID]
+
+
+def test_sparse_map_replaces_unsupported_color_with_unused_current_color():
+    grid = legacy_pixel_grid_from_dict(
+        {
+            "map": [
+                {"r": 0, "c": 0, "color": 99},
+                {"r": 0, "c": 1, "color": 2},
+                {"r": 0, "c": 2, "color": 99},
+            ]
+        }
+    )
+
+    assert grid.color_ids == [0, 2, 0]
+
+
+def test_sparse_map_requires_at_least_one_cell():
+    with pytest.raises(LegacyLevelImportError, match="at least one cell"):
+        legacy_pixel_grid_from_dict({"map": []})
+
+
+def test_rejects_when_neither_pixel_board_nor_map_are_present():
+    with pytest.raises(LegacyLevelImportError, match="pixelBoard object or a map array"):
+        legacy_pixel_grid_from_dict({"level": 1})

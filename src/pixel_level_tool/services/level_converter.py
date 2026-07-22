@@ -35,10 +35,10 @@ def _load_convertible(path: Path):
 
 
 def convert_file(path: str | Path) -> None:
-    """Convert one level file to the new format in place (with a .bak backup)."""
+    """Convert one level file to the new format in place."""
     target = Path(path)
     level = _load_convertible(target)
-    save_level(target, level, create_backup=True)
+    save_level(target, level)
 
 
 def convert_folder(folder: str | Path) -> ConvertSummary:

@@ -141,10 +141,10 @@ class MainWindow(QMainWindow):
             action.setToolTip(f"{description} ({action.shortcut().toString()})")
         self.validate_action.setToolTip("Validate the current level")
         self.convert_file_action.setToolTip(
-            "Convert one old-format level file to the new format in place (creates a .bak backup)"
+            "Convert one old-format level file to the new format in place"
         )
         self.convert_all_action.setToolTip(
-            "Convert every level file in a folder to the new format in place (creates .bak backups)"
+            "Convert every level file in a folder to the new format in place"
         )
 
         meta = QWidget()
@@ -739,7 +739,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Validation failed", "Fix validation errors before saving.")
             return False
         try:
-            save_level(target, self.level, create_backup=False)
+            save_level(target, self.level)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(
             self,
             "Convert level file",
-            f"Convert and overwrite '{source.name}' with the new format?\nA .bak backup will be created.",
+            f"Convert and overwrite '{source.name}' with the new format?",
         ) != QMessageBox.Yes:
             return
         try:
@@ -990,7 +990,7 @@ class MainWindow(QMainWindow):
             self,
             "Convert all levels",
             f"Convert and overwrite up to {json_count} .json file(s) in\n{folder_path}\n"
-            "with the new format?\n.bak backups will be created.",
+            "with the new format?",
         ) != QMessageBox.Yes:
             return
         summary = convert_folder(folder_path)

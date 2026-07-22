@@ -24,11 +24,40 @@ def _positive_int(value: object, field: str) -> int:
     return value
 
 
-def legacy_pixel_grid_from_dict(data: dict[str, object]) -> PixelGridData:
-    pixel_board = _object_field(data, "pixelBoard", "PixelBoard")
-    if not isinstance(pixel_board, dict):
-        raise LegacyLevelImportError("Legacy JSON does not contain a pixelBoard object.")
+def _non_negative_int(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LegacyLevelImportError(f"{field} must be a non-negative integer.")
+    return value
 
+
+class _LegacyColorRemapper:
+    """Maps legacy color ids onto the current ``ItemColor`` ids.
+
+    ``0`` is treated as empty. Ids that already match a current ``ItemColor``
+    pass through unchanged. Unrecognized ids are assigned an unused current
+    color id on first sight, so the same legacy id always resolves the same way.
+    """
+
+    def __init__(self, raw_values: list[int]) -> None:
+        self._valid_color_ids = {int(color) for color in ItemColor}
+        used = {value for value in raw_values if value != 0 and value in self._valid_color_ids}
+        self._available = iter(sorted(self._valid_color_ids - used))
+        self._replacement_by_legacy_id: dict[int, int] = {}
+
+    def resolve(self, value: int, error: str) -> int:
+        if value == 0:
+            return EMPTY_COLOR_ID
+        if value in self._valid_color_ids:
+            return value
+        if value not in self._replacement_by_legacy_id:
+            try:
+                self._replacement_by_legacy_id[value] = next(self._available)
+            except StopIteration as exc:
+                raise LegacyLevelImportError(error) from exc
+        return self._replacement_by_legacy_id[value]
+
+
+def _pixel_grid_from_pixel_board(pixel_board: dict[str, object]) -> PixelGridData:
     dimensions = _object_field(pixel_board, "dimensions", "Dimensions")
     if not isinstance(dimensions, dict):
         raise LegacyLevelImportError("pixelBoard does not contain a dimensions object.")
@@ -49,30 +78,59 @@ def legacy_pixel_grid_from_dict(data: dict[str, object]) -> PixelGridData:
         if isinstance(value, bool) or not isinstance(value, int):
             raise LegacyLevelImportError(f"pixelBoard.colors[{index}] must be an integer.")
 
-    valid_color_ids = {int(color) for color in ItemColor}
-    used_color_ids = {value for value in colors if value != 0 and value in valid_color_ids}
-    available_color_ids = iter(sorted(valid_color_ids - used_color_ids))
-    replacement_by_legacy_id: dict[int, int] = {}
-
-    color_ids: list[int] = []
-    for index, value in enumerate(colors):
-        if value == 0:
-            color_id = EMPTY_COLOR_ID
-        elif value in valid_color_ids:
-            color_id = value
-        else:
-            if value not in replacement_by_legacy_id:
-                try:
-                    replacement_by_legacy_id[value] = next(available_color_ids)
-                except StopIteration as exc:
-                    raise LegacyLevelImportError(
-                        "Not enough unused current colors to replace all unsupported "
-                        f"legacy color ids (cannot replace {value} at pixelBoard.colors[{index}])."
-                    ) from exc
-            color_id = replacement_by_legacy_id[value]
-        color_ids.append(color_id)
+    remapper = _LegacyColorRemapper(colors)
+    color_ids = [
+        remapper.resolve(
+            value,
+            "Not enough unused current colors to replace all unsupported "
+            f"legacy color ids (cannot replace {value} at pixelBoard.colors[{index}]).",
+        )
+        for index, value in enumerate(colors)
+    ]
 
     return PixelGridData(width=width, height=height, color_ids=color_ids)
+
+
+def _pixel_grid_from_sparse_map(entries: list[object]) -> PixelGridData:
+    if not entries:
+        raise LegacyLevelImportError("map must contain at least one cell.")
+
+    cells: list[tuple[int, int, int]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise LegacyLevelImportError(f"map[{index}] must be an object.")
+        row = _non_negative_int(_object_field(entry, "r", "R"), f"map[{index}].r")
+        column = _non_negative_int(_object_field(entry, "c", "C"), f"map[{index}].c")
+        color = _object_field(entry, "color", "Color")
+        if isinstance(color, bool) or not isinstance(color, int):
+            raise LegacyLevelImportError(f"map[{index}].color must be an integer.")
+        cells.append((row, column, color))
+
+    width = max(column for _, column, _ in cells) + 1
+    height = max(row for row, _, _ in cells) + 1
+
+    remapper = _LegacyColorRemapper([color for _, _, color in cells])
+    color_ids = [EMPTY_COLOR_ID] * (width * height)
+    for index, (row, column, color) in enumerate(cells):
+        color_ids[row * width + column] = remapper.resolve(
+            color,
+            "Not enough unused current colors to replace all unsupported "
+            f"legacy color ids (cannot replace {color} at map[{index}] (r={row}, c={column})).",
+        )
+
+    return PixelGridData(width=width, height=height, color_ids=color_ids)
+
+
+def legacy_pixel_grid_from_dict(data: dict[str, object]) -> PixelGridData:
+    pixel_board = _object_field(data, "pixelBoard", "PixelBoard")
+    if isinstance(pixel_board, dict):
+        return _pixel_grid_from_pixel_board(pixel_board)
+
+    sparse_map = _object_field(data, "map", "Map")
+    if isinstance(sparse_map, list):
+        return _pixel_grid_from_sparse_map(sparse_map)
+
+    raise LegacyLevelImportError("Legacy JSON does not contain a pixelBoard object or a map array.")
 
 
 def import_legacy_pixel_grid(path: str | Path) -> PixelGridData:

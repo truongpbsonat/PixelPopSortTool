@@ -393,12 +393,9 @@ def dumps_level(level: PixelLevelData) -> str:
     return _collapse_color_list_blocks(content) + "\n"
 
 
-def save_level(path: str | Path, level: PixelLevelData, *, create_backup: bool = False) -> None:
+def save_level(path: str | Path, level: PixelLevelData) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if create_backup and target.exists():
-        backup = target.with_suffix(target.suffix + ".bak")
-        backup.write_bytes(target.read_bytes())
     content = dumps_level(level)
     fd, temp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
     try:

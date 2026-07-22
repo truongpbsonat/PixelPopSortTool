@@ -76,16 +76,13 @@ def test_convert_file_migrates_to_new_format_in_place(tmp_path):
         assert dropped not in written
 
 
-def test_convert_file_creates_backup(tmp_path):
+def test_convert_file_does_not_create_backup(tmp_path):
     target = tmp_path / "1.json"
-    original = _legacy_pixel_level()
-    _write(target, original)
+    _write(target, _legacy_pixel_level())
 
     convert_file(target)
 
-    backup = tmp_path / "1.json.bak"
-    assert backup.exists()
-    assert json.loads(backup.read_text(encoding="utf-8")) == original
+    assert not (tmp_path / "1.json.bak").exists()
 
 
 def test_convert_file_rejects_non_pixel_level(tmp_path):
