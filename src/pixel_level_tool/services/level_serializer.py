@@ -363,11 +363,15 @@ def level_from_dict(data: dict[str, Any]) -> PixelLevelData:
 
 
 def load_level(path: str | Path) -> PixelLevelData:
+    return level_from_dict(load_level_document(path))
+
+
+def load_level_document(path: str | Path) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
         raise LevelSerializationError("Root JSON must be an object.")
-    return level_from_dict(data)
+    return data
 
 
 # --------------------------------------------------------------------------- #
@@ -394,9 +398,19 @@ def dumps_level(level: PixelLevelData) -> str:
 
 
 def save_level(path: str | Path, level: PixelLevelData) -> None:
+    _write_content_atomic(path, dumps_level(level))
+
+
+def save_level_document(path: str | Path, document: dict[str, Any]) -> None:
+    if not isinstance(document, dict):
+        raise LevelSerializationError("Root JSON must be an object.")
+    content = json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
+    _write_content_atomic(path, _collapse_color_list_blocks(content) + "\n")
+
+
+def _write_content_atomic(path: str | Path, content: str) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    content = dumps_level(level)
     fd, temp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:

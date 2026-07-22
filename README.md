@@ -56,6 +56,16 @@ While working in a selected level folder, **Save** (`Ctrl+S`) writes directly to
 Level currently shown in the editor. **Save As** is the only action that opens a file dialog and allows a
 custom folder or file name. Saving overwrites the existing file directly and does not create a `.json.bak` copy.
 
+Before a level is saved, the editor replaces its `mechanics` array with the mechanics discovered from the
+current Box Grid data. The IDs are unique and always follow the runtime `MarbleFlowMechanicIds.AllActive`
+order; stale entries are not merged back in.
+
+Use **Scan Mechanics In Folder** to scan every `*.json` file recursively. Choose **Preview / Dry Run** to
+review totals without writing, or **Update Files** to atomically rewrite only changed files. The operation
+has progress/cancel controls, continues after individual file failures, and reports Total, Changed,
+Unchanged, Failed, per-file errors, and unknown-type warnings. This batch path preserves unrelated JSON
+fields and can discover TrioBox and PopMachine data even though those cells are not editable in the UI.
+
 ## Test
 
 ```powershell
@@ -208,7 +218,7 @@ The tool does not hardcode any Unity repository path.
 ## Unsupported Features
 
 Cargo editor, LinkedCargo, KeyForCargo, Classic mode, pixel obstacles, pixel modifiers,
-TrioBox, PopMachine, LargeBlockCellData, boosters, and Unity EditorWindow workflows are intentionally out of scope.
+editing TrioBox/PopMachine/LargeBlockCellData, boosters, and Unity EditorWindow workflows are intentionally out of scope.
 
 ## Unity Checklist
 

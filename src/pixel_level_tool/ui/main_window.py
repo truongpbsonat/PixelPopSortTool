@@ -13,8 +13,10 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -33,6 +35,8 @@ from pixel_level_tool.services.legacy_level_importer import LegacyLevelImportErr
 from pixel_level_tool.services.level_converter import LevelConvertError, convert_file, convert_folder
 from pixel_level_tool.services.level_serializer import LevelSerializationError, load_level, save_level
 from pixel_level_tool.services.level_validator import LevelValidator
+from pixel_level_tool.services.mechanics_batch import scan_mechanics_in_folder
+from pixel_level_tool.services.mechanics_scanner import MechanicsScanner
 from pixel_level_tool.services.recent_files_service import RecentFilesService
 from pixel_level_tool.services.settings_service import SettingsService
 from pixel_level_tool.ui.dialogs.image_import_dialog import ImageImportDialog
@@ -59,6 +63,7 @@ class MainWindow(QMainWindow):
             apply_theme(application, self.theme)
         self.recent_files = RecentFilesService(self.settings)
         self.validator = LevelValidator()
+        self.mechanics_scanner = MechanicsScanner()
         self.level = PixelLevelData()
         self.path: Path | None = None
         self.level_folder: Path | None = None
@@ -85,6 +90,7 @@ class MainWindow(QMainWindow):
         self.save_as_action = QAction("Save As", self)
         self.convert_file_action = QAction("Convert File", self)
         self.convert_all_action = QAction("Convert All", self)
+        self.scan_mechanics_action = QAction("Scan Mechanics In Folder", self)
         self.validate_action = QAction("Validate", self)
         self.undo_action = QAction("Undo", self)
         self.redo_action = QAction("Redo", self)
@@ -98,6 +104,7 @@ class MainWindow(QMainWindow):
             self.save_as_action,
             self.convert_file_action,
             self.convert_all_action,
+            self.scan_mechanics_action,
             self.validate_action,
             self.undo_action,
             self.redo_action,
@@ -146,6 +153,9 @@ class MainWindow(QMainWindow):
         self.convert_all_action.setToolTip(
             "Convert every level file in a folder to the new format in place"
         )
+        self.scan_mechanics_action.setToolTip(
+            "Preview or update discovered mechanics in all level JSON files under a folder"
+        )
 
         meta = QWidget()
         meta_layout = QGridLayout(meta)
@@ -153,33 +163,21 @@ class MainWindow(QMainWindow):
         self.level_spin.setRange(1, 99999)
         self.load_level_button = QPushButton("Load Level")
         self.load_level_button.setToolTip("Load this level number from the selected folder")
-        self.game_mode_spin = QSpinBox()
-        self.game_mode_spin.setRange(0, 99999)
-        self.map_type_spin = QSpinBox()
-        self.map_type_spin.setRange(0, 99999)
-        self.board_spin = QSpinBox()
-        self.board_spin.setRange(0, 99999)
         self.difficulty_spin = QSpinBox()
         self.difficulty_spin.setRange(0, 99999)
-        self.time_spin = QSpinBox()
-        self.time_spin.setRange(0, 99999)
-        self.piece_spin = QSpinBox()
-        self.piece_spin.setRange(0, 99999)
+        self.mechanics_field = QLineEdit()
+        self.mechanics_field.setReadOnly(True)
+        self.mechanics_field.setPlaceholderText("None")
+        self.mechanics_field.setToolTip(
+            "Mechanics detected from the current level data. This list is regenerated on Save."
+        )
         meta_layout.addWidget(QLabel("Level"), 0, 0)
         meta_layout.addWidget(self.level_spin, 0, 1)
         meta_layout.addWidget(self.load_level_button, 0, 2)
-        meta_layout.addWidget(QLabel("Game Mode"), 0, 3)
-        meta_layout.addWidget(self.game_mode_spin, 0, 4)
-        meta_layout.addWidget(QLabel("Time"), 0, 5)
-        meta_layout.addWidget(self.time_spin, 0, 6)
-        meta_layout.addWidget(QLabel("Map Type"), 1, 0)
-        meta_layout.addWidget(self.map_type_spin, 1, 1)
-        meta_layout.addWidget(QLabel("Board"), 1, 2)
-        meta_layout.addWidget(self.board_spin, 1, 3)
-        meta_layout.addWidget(QLabel("Difficulty"), 1, 4)
-        meta_layout.addWidget(self.difficulty_spin, 1, 5)
-        meta_layout.addWidget(QLabel("Piece"), 1, 6)
-        meta_layout.addWidget(self.piece_spin, 1, 7)
+        meta_layout.addWidget(QLabel("Difficulty"), 0, 3)
+        meta_layout.addWidget(self.difficulty_spin, 0, 4)
+        meta_layout.addWidget(QLabel("Mechanics"), 1, 0)
+        meta_layout.addWidget(self.mechanics_field, 1, 1, 1, 7)
         meta_layout.setColumnStretch(7, 1)
 
         self.color_palette = ColorPalette()
@@ -367,18 +365,11 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self.save_as)
         self.convert_file_action.triggered.connect(self.convert_level_file)
         self.convert_all_action.triggered.connect(self.convert_level_folder)
+        self.scan_mechanics_action.triggered.connect(self.scan_mechanics_folder)
         self.validate_action.triggered.connect(self.validate)
         self.undo_action.triggered.connect(self.commands.undo)
         self.redo_action.triggered.connect(self.commands.redo)
-        for spin_box in (
-            self.game_mode_spin,
-            self.map_type_spin,
-            self.board_spin,
-            self.difficulty_spin,
-            self.time_spin,
-            self.piece_spin,
-        ):
-            spin_box.valueChanged.connect(self._metadata_changed)
+        self.difficulty_spin.valueChanged.connect(self._metadata_changed)
         self.color_palette.color_changed.connect(self._replace_color_from_palette)
         self.color_palette.color_changed.connect(self.pixel_editor.set_color)
         self.color_palette.color_changed.connect(lambda color: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, color, self.shape_palette.is_active, self.shape_palette.is_tunnel))
@@ -452,12 +443,7 @@ class MainWindow(QMainWindow):
     def _metadata_changed(self) -> None:
         changed = False
         metadata_values = (
-            ("game_mode", self.game_mode_spin.value()),
-            ("map_type", self.map_type_spin.value()),
-            ("board", self.board_spin.value()),
             ("difficulty", self.difficulty_spin.value()),
-            ("time", self.time_spin.value()),
-            ("piece", self.piece_spin.value()),
         )
         for attribute, value in metadata_values:
             if getattr(self.level, attribute) != value:
@@ -479,29 +465,15 @@ class MainWindow(QMainWindow):
         self.level.pixel_grid.ensure_dense()
         for widget in (
             self.level_spin,
-            self.game_mode_spin,
-            self.map_type_spin,
-            self.board_spin,
             self.difficulty_spin,
-            self.time_spin,
-            self.piece_spin,
         ):
             widget.blockSignals(True)
         self.level_spin.setValue(self.level.level)
-        self.game_mode_spin.setValue(self.level.game_mode)
-        self.map_type_spin.setValue(self.level.map_type)
-        self.board_spin.setValue(self.level.board)
         self.difficulty_spin.setValue(self.level.difficulty)
-        self.time_spin.setValue(self.level.time)
-        self.piece_spin.setValue(self.level.piece)
+        self.mechanics_field.setText(", ".join(self.mechanics_scanner.scan(self.level)))
         for widget in (
             self.level_spin,
-            self.game_mode_spin,
-            self.map_type_spin,
-            self.board_spin,
             self.difficulty_spin,
-            self.time_spin,
-            self.piece_spin,
         ):
             widget.blockSignals(False)
         self.box_editor.set_level(self.level)
@@ -738,9 +710,13 @@ class MainWindow(QMainWindow):
         if not result.is_valid:
             QMessageBox.warning(self, "Validation failed", "Fix validation errors before saving.")
             return False
+        previous_mechanics = self.level.mechanics
         try:
+            scanned_mechanics = self.mechanics_scanner.scan(self.level)
+            self.level.mechanics = scanned_mechanics
             save_level(target, self.level)
         except Exception as exc:
+            self.level.mechanics = previous_mechanics
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
         self.path = target
@@ -1004,6 +980,87 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Convert all", "\n".join(lines))
         self.statusBar().showMessage(
             f"Converted {len(summary.converted)} file(s), skipped {len(summary.skipped)}", 5000
+        )
+
+    def scan_mechanics_folder(self) -> None:
+        start_dir = self.settings.get("last_mechanics_scan_dir", self.settings.get("last_level_folder", ""))
+        folder = QFileDialog.getExistingDirectory(self, "Scan Mechanics In Folder", start_dir)
+        if not folder:
+            return
+        folder_path = Path(folder)
+        json_count = sum(1 for path in folder_path.rglob("*.json") if path.is_file())
+        if json_count == 0:
+            QMessageBox.information(
+                self,
+                "Scan Mechanics In Folder",
+                "No .json files were found in the selected folder or its subfolders.",
+            )
+            return
+
+        mode_dialog = QMessageBox(self)
+        mode_dialog.setWindowTitle("Scan Mechanics In Folder")
+        mode_dialog.setText(f"Found {json_count} JSON file(s) under:\n{folder_path}")
+        mode_dialog.setInformativeText(
+            "Preview performs a dry run. Update writes only files whose mechanics list changes."
+        )
+        preview_button = mode_dialog.addButton("Preview / Dry Run", QMessageBox.ActionRole)
+        update_button = mode_dialog.addButton("Update Files", QMessageBox.AcceptRole)
+        mode_dialog.addButton(QMessageBox.Cancel)
+        mode_dialog.exec()
+        selected_button = mode_dialog.clickedButton()
+        if selected_button not in (preview_button, update_button):
+            return
+        dry_run = selected_button is preview_button
+
+        progress_dialog = QProgressDialog("Scanning mechanics...", "Cancel", 0, json_count, self)
+        progress_dialog.setWindowTitle("Scan Mechanics In Folder")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+
+        def update_progress(current: int, total: int, path: Path) -> None:
+            progress_dialog.setMaximum(total)
+            progress_dialog.setValue(current - 1)
+            progress_dialog.setLabelText(f"Scanning {path}")
+            QApplication.processEvents()
+
+        summary = scan_mechanics_in_folder(
+            folder_path,
+            dry_run=dry_run,
+            progress=update_progress,
+            should_cancel=progress_dialog.wasCanceled,
+            scanner=self.mechanics_scanner,
+        )
+        progress_dialog.setValue(json_count)
+        self.settings.set("last_mechanics_scan_dir", str(folder_path))
+
+        lines = [
+            f"Total: {summary.total}",
+            f"Changed: {summary.changed}",
+            f"Unchanged: {summary.unchanged}",
+            f"Failed: {summary.failed}",
+        ]
+        if dry_run:
+            lines.insert(0, "Preview / Dry Run — no files were written.")
+        if summary.cancelled:
+            lines.insert(0, "Cancelled before all files were scanned.")
+        if summary.failures:
+            lines.append("")
+            lines.append("Failures:")
+            lines.extend(f"{failure.path}: {failure.error}" for failure in summary.failures[:20])
+            if len(summary.failures) > 20:
+                lines.append(f"... and {len(summary.failures) - 20} more failure(s).")
+        if summary.warnings:
+            lines.append("")
+            lines.append("Warnings:")
+            lines.extend(f"{warning.path}: {warning.message}" for warning in summary.warnings[:20])
+            if len(summary.warnings) > 20:
+                lines.append(f"... and {len(summary.warnings) - 20} more warning(s).")
+
+        QMessageBox.information(self, "Mechanics scan report", "\n".join(lines))
+        self.statusBar().showMessage(
+            f"Mechanics scan: {summary.changed} changed, {summary.unchanged} unchanged, "
+            f"{summary.failed} failed",
+            7000,
         )
 
     def dragEnterEvent(self, event) -> None:

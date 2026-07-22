@@ -6,7 +6,13 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QDialog
 
 from pixel_level_tool.domain.enums import CellShape, Direction, EMPTY_COLOR_ID, ItemColor
-from pixel_level_tool.domain.level_models import BoxCellData, PixelGridData, PixelLevelData, TunnelCellData
+from pixel_level_tool.domain.level_models import (
+    BoxCellData,
+    FrozenCellEffectData,
+    PixelGridData,
+    PixelLevelData,
+    TunnelCellData,
+)
 from pixel_level_tool.services.level_serializer import save_level
 from pixel_level_tool.ui.main_window import MainWindow
 from pixel_level_tool.ui.widgets.box_grid_editor import CELL
@@ -102,6 +108,20 @@ def test_resize_pixel_grid_updates_model_and_scene(qtbot, monkeypatch):
     assert window.pixel_editor.scene.sceneRect().width() == 72
     assert window.pixel_editor.scene.sceneRect().height() == 48
     window._set_dirty(False)
+    window.close()
+
+
+def test_mechanics_field_is_read_only_and_shows_live_scan_result(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _valid_level(1)
+    window.level.mechanics = ["StaleMechanic"]
+    window.level.grid_cells[0].effects = [FrozenCellEffectData(1)]
+
+    window._refresh_all()
+
+    assert window.mechanics_field.isReadOnly()
+    assert window.mechanics_field.text() == "Frozen"
     window.close()
 
 
@@ -365,18 +385,12 @@ def test_import_legacy_pixel_grid_replaces_only_pixel_grid(qtbot, monkeypatch, t
     window.close()
 
 
-def test_visible_metadata_fields_are_user_editable(qtbot):
+def test_visible_difficulty_field_is_user_editable(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
 
-    window.game_mode_spin.setValue(7)
-    window.map_type_spin.setValue(9)
-    window.board_spin.setValue(4)
     window.difficulty_spin.setValue(2)
 
-    assert window.level.game_mode == 7
-    assert window.level.map_type == 9
-    assert window.level.board == 4
     assert window.level.difficulty == 2
     window._set_dirty(False)
     window.close()
@@ -507,6 +521,52 @@ def test_save_in_level_folder_uses_current_level_number(qtbot, monkeypatch, tmp_
 
     assert saved_paths == [level_folder / "12.2.json"]
     assert window.path == level_folder / "12.2.json"
+    window.close()
+
+
+def test_save_replaces_stale_mechanics_with_scan_result(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+    target = tmp_path / "level.json"
+    saved_mechanics = []
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr(
+        "pixel_level_tool.ui.main_window.save_level",
+        lambda path, level, **kwargs: saved_mechanics.append(list(level.mechanics)),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _valid_level(7)
+    window.level.grid_cells.append(
+        BoxCellData(0, 1, CellShape.Rectangle_3x1, Direction.Up, ItemColor.Red, 301)
+    )
+    window.level.pixel_grid = PixelGridData(6, 1, [int(ItemColor.Red)] * 6)
+    window.level.grid_cells[0].effects = [FrozenCellEffectData(1)]
+    window.level.mechanics = ["RemovedMechanic", "Hidden"]
+
+    assert window._save_to_path(target)
+
+    assert saved_mechanics == [["Frozen"]]
+    assert window.level.mechanics == ["Frozen"]
+    window.close()
+
+
+def test_save_failure_restores_existing_mechanics(qtbot, monkeypatch, tmp_path):
+    app_data = tmp_path / "app-data"
+
+    def fail_save(*args, **kwargs):
+        raise OSError("write failed")
+
+    monkeypatch.setattr("pixel_level_tool.services.settings_service.app_data_dir", lambda: app_data)
+    monkeypatch.setattr("pixel_level_tool.ui.main_window.save_level", fail_save)
+    monkeypatch.setattr("pixel_level_tool.ui.main_window.QMessageBox.critical", lambda *args: None)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _valid_level(7)
+    window.level.mechanics = ["Existing"]
+
+    assert not window._save_to_path(tmp_path / "level.json")
+
+    assert window.level.mechanics == ["Existing"]
     window.close()
 
 

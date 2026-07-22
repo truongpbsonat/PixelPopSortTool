@@ -17,12 +17,14 @@ src/pixel_level_tool/domain/shapes.py
 src/pixel_level_tool/services/__init__.py
 src/pixel_level_tool/services/image_importer.py
 src/pixel_level_tool/services/legacy_level_importer.py
+src/pixel_level_tool/services/level_converter.py
 src/pixel_level_tool/services/level_serializer.py
 src/pixel_level_tool/services/level_validator.py
 src/pixel_level_tool/services/recent_files_service.py
 src/pixel_level_tool/services/settings_service.py
 src/pixel_level_tool/ui/__init__.py
 src/pixel_level_tool/ui/main_window.py
+src/pixel_level_tool/ui/theme.py
 src/pixel_level_tool/ui/dialogs/image_import_dialog.py
 src/pixel_level_tool/ui/dialogs/new_level_dialog.py
 src/pixel_level_tool/ui/dialogs/replace_color_dialog.py
@@ -41,9 +43,12 @@ tests/test_color_palette.py
 tests/test_effect_obstacle_serializer.py
 tests/test_effect_obstacle_validator.py
 tests/test_gui_smoke.py
+tests/test_image_import_dialog.py
 tests/test_image_importer.py
 tests/test_legacy_level_importer.py
+tests/test_level_converter.py
 tests/test_pixel_grid.py
+tests/test_pixel_grid_editor_resize.py
 tests/test_serializer.py
 tests/test_shapes.py
 tests/test_validator.py
