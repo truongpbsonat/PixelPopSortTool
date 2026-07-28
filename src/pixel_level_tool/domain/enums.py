@@ -81,15 +81,6 @@ class ObstacleType(IntEnum):
     Elevator = 8
 
 
-class MapType(IntEnum):
-    None_ = 0
-    Map1 = 1
-    Map2 = 2
-    Map3 = 3
-    Map4 = 4
-    Map5 = 5
-
-
 class GameMode(IntEnum):
     Classic = 0
 

@@ -23,7 +23,6 @@ def test_serializer_writes_new_pop_sort_2_format():
     assert set(data) == {
         "pixelGrid",
         "boxGrid",
-        "mapType",
         "time",
         "piece",
         "gameMode",
@@ -51,7 +50,6 @@ def test_serializer_writes_new_pop_sort_2_format():
     assert cell["effects"] is None
 
     assert data["pixelGrid"]["colorIds"] == [int(ItemColor.Red)] * 3
-    assert data["mapType"] == "None"
     assert data["gameMode"] == "Classic"
     assert data["difficulty"] == "Easy"
     assert data["themeId"] == "None"
@@ -113,7 +111,6 @@ def test_load_defaults_when_box_grid_absent():
 
 def test_load_preserves_root_metadata_names():
     data = json.loads(dumps_level(make_level()))
-    data["mapType"] = "Map3"
     data["gameMode"] = "Classic"
     data["difficulty"] = "Hard"
     data["board"] = 4  # board lives under boxGrid; root value is ignored
@@ -123,12 +120,10 @@ def test_load_preserves_root_metadata_names():
     loaded = level_from_dict(data)
     written = json.loads(dumps_level(loaded))
 
-    assert loaded.map_type == 3
     assert loaded.game_mode == 0
     assert loaded.difficulty == 2
     assert loaded.board == 4
     assert loaded.category == 11
-    assert written["mapType"] == "Map3"
     assert written["gameMode"] == "Classic"
     assert written["difficulty"] == "Hard"
     assert written["boxGrid"]["board"] == 4

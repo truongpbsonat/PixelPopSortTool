@@ -22,7 +22,6 @@ def _legacy_pixel_level(level: int = 1) -> dict:
         },
         "levelGridVersion": 1,
         "levelName": f"Pixel Level {level}",
-        "mapType": 0,
         "gridRows": 3,
         "gridCols": 3,
         "board": 1,
@@ -69,7 +68,6 @@ def test_convert_file_migrates_to_new_format_in_place(tmp_path):
 
     assert written["time"] == 60
     assert written["piece"] == 5
-    assert written["mapType"] == "None"
     assert written["gameMode"] == "Classic"
     assert written["difficulty"] == "Easy"
     for dropped in ("gridLanes", "levelName", "levelGridVersion"):

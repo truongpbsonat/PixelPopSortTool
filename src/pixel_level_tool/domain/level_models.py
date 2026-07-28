@@ -299,7 +299,6 @@ class PixelLevelData:
     level: int = 1
     level_name: str | None = "Pixel Level 1"
     level_grid_version: int = 1
-    map_type: int = 0
     board: int = 1
     time: int = 60
     piece: int = 5
