@@ -8,6 +8,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QGridLayout,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from pixel_level_tool.domain.commands import CommandStack
-from pixel_level_tool.domain.enums import EMPTY_COLOR_ID
+from pixel_level_tool.domain.enums import EMPTY_COLOR_ID, THEME_ID_LABELS, LevelDifficulty, ThemeId
 from pixel_level_tool.domain.level_models import PixelGridData, PixelLevelData
 from pixel_level_tool.services.image_importer import ImageImportError, import_image_to_color_ids
 from pixel_level_tool.services.legacy_level_importer import LegacyLevelImportError, import_legacy_pixel_grid
@@ -53,6 +54,10 @@ from pixel_level_tool.ui.widgets.validation_panel import ValidationPanel
 
 class MainWindow(QMainWindow):
     _LEVEL_FILE_PATTERN = re.compile(r"^(?P<level>\d+)(?:\.(?P<category>\d+))?\.json$", re.IGNORECASE)
+    _DIFFICULTY_FORCED_THEME = {
+        int(LevelDifficulty.Hard): int(ThemeId.Hard),
+        int(LevelDifficulty.SuperHard): int(ThemeId.SuperHard),
+    }
 
     def __init__(self) -> None:
         super().__init__()
@@ -165,6 +170,22 @@ class MainWindow(QMainWindow):
         self.load_level_button.setToolTip("Load this level number from the selected folder")
         self.difficulty_spin = QSpinBox()
         self.difficulty_spin.setRange(0, 99999)
+        self.theme_combo = QComboBox()
+        self.theme_combo.setToolTip(
+            "Theme for this level. Hard / Super Hard themes are picked automatically"
+            " when the difficulty is set to Hard or Super Hard."
+        )
+        for theme in (
+            ThemeId.None_,
+            ThemeId.Theme0,
+            ThemeId.Theme1,
+            ThemeId.Theme2,
+            ThemeId.Theme3,
+            ThemeId.Theme4,
+            ThemeId.Hard,
+            ThemeId.SuperHard,
+        ):
+            self.theme_combo.addItem(THEME_ID_LABELS[theme], int(theme))
         self.mechanics_field = QLineEdit()
         self.mechanics_field.setReadOnly(True)
         self.mechanics_field.setPlaceholderText("None")
@@ -176,6 +197,8 @@ class MainWindow(QMainWindow):
         meta_layout.addWidget(self.load_level_button, 0, 2)
         meta_layout.addWidget(QLabel("Difficulty"), 0, 3)
         meta_layout.addWidget(self.difficulty_spin, 0, 4)
+        meta_layout.addWidget(QLabel("Theme"), 0, 5)
+        meta_layout.addWidget(self.theme_combo, 0, 6)
         meta_layout.addWidget(QLabel("Mechanics"), 1, 0)
         meta_layout.addWidget(self.mechanics_field, 1, 1, 1, 7)
         meta_layout.setColumnStretch(7, 1)
@@ -370,6 +393,7 @@ class MainWindow(QMainWindow):
         self.undo_action.triggered.connect(self.commands.undo)
         self.redo_action.triggered.connect(self.commands.redo)
         self.difficulty_spin.valueChanged.connect(self._metadata_changed)
+        self.theme_combo.currentIndexChanged.connect(self._metadata_changed)
         self.color_palette.color_changed.connect(self._replace_color_from_palette)
         self.color_palette.color_changed.connect(self.pixel_editor.set_color)
         self.color_palette.color_changed.connect(lambda color: self.box_editor.set_tool(self.shape_palette.shape, self.shape_palette.direction, color, self.shape_palette.is_active, self.shape_palette.is_tunnel))
@@ -440,10 +464,28 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
         self._refresh_all()
 
+    def _theme_combo_index(self, value: int) -> int:
+        index = self.theme_combo.findData(value)
+        return index if index != -1 else 0
+
     def _metadata_changed(self) -> None:
         changed = False
+        difficulty_value = self.difficulty_spin.value()
+        forced_theme = self._DIFFICULTY_FORCED_THEME.get(difficulty_value)
+        self.theme_combo.setEnabled(forced_theme is None)
+        if forced_theme is not None:
+            index = self._theme_combo_index(forced_theme)
+            if self.theme_combo.currentIndex() != index:
+                self.theme_combo.blockSignals(True)
+                self.theme_combo.setCurrentIndex(index)
+                self.theme_combo.blockSignals(False)
+            theme_value = forced_theme
+        else:
+            theme_value = int(self.theme_combo.currentData())
+
         metadata_values = (
-            ("difficulty", self.difficulty_spin.value()),
+            ("difficulty", difficulty_value),
+            ("theme_id", theme_value),
         )
         for attribute, value in metadata_values:
             if getattr(self.level, attribute) != value:
@@ -466,14 +508,18 @@ class MainWindow(QMainWindow):
         for widget in (
             self.level_spin,
             self.difficulty_spin,
+            self.theme_combo,
         ):
             widget.blockSignals(True)
         self.level_spin.setValue(self.level.level)
         self.difficulty_spin.setValue(self.level.difficulty)
+        self.theme_combo.setCurrentIndex(self._theme_combo_index(self.level.theme_id))
+        self.theme_combo.setEnabled(self.level.difficulty not in self._DIFFICULTY_FORCED_THEME)
         self.mechanics_field.setText(", ".join(self.mechanics_scanner.scan(self.level)))
         for widget in (
             self.level_spin,
             self.difficulty_spin,
+            self.theme_combo,
         ):
             widget.blockSignals(False)
         self.box_editor.set_level(self.level)

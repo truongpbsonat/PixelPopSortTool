@@ -13,6 +13,7 @@ from pixel_level_tool.domain.enums import (
     GameMode,
     ItemColor,
     LevelDifficulty,
+    ThemeId,
     WoolCrateColor,
 )
 from pixel_level_tool.domain.shapes import ball_count, footprint, oriented_dimensions
@@ -306,6 +307,7 @@ class PixelLevelData:
     pixel_grid: PixelGridData = field(default_factory=PixelGridData)
     game_mode: int = int(GameMode.Classic)
     difficulty: int = int(LevelDifficulty.Easy)
+    theme_id: int = int(ThemeId.None_)
     category: int = 0
     mechanics: list[str] = field(default_factory=list)
     grid_lanes: list[object] = field(default_factory=list)

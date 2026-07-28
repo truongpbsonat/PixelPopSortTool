@@ -101,6 +101,17 @@ class LevelDifficulty(IntEnum):
     SuperHard = 3
 
 
+class ThemeId(IntEnum):
+    Theme0 = 0
+    Theme1 = 1
+    Theme2 = 2
+    Theme3 = 3
+    Theme4 = 4
+    Hard = 10
+    SuperHard = 11
+    None_ = 255
+
+
 def enum_name(member: IntEnum) -> str:
     """Serialized enum name expected by Pop-Sort-2 (``None_`` maps back to ``None``)."""
     return member.name.removesuffix("_")
@@ -127,6 +138,26 @@ def enum_value_from_name(enum_type: type[IntEnum], name: str, fallback: IntEnum)
         except KeyError:
             pass
     return int(fallback)
+
+
+def enum_int_from_value(enum_type: type[IntEnum], value: int, fallback: IntEnum) -> int:
+    """Int value for a UI-set field, clamped to a valid member on unknown input."""
+    try:
+        return int(enum_type(value))
+    except ValueError:
+        return int(fallback)
+
+
+THEME_ID_LABELS: dict[ThemeId, str] = {
+    ThemeId.None_: "None",
+    ThemeId.Theme0: "Theme 0",
+    ThemeId.Theme1: "Theme 1",
+    ThemeId.Theme2: "Theme 2",
+    ThemeId.Theme3: "Theme 3",
+    ThemeId.Theme4: "Theme 4",
+    ThemeId.Hard: "Hard",
+    ThemeId.SuperHard: "Super Hard",
+}
 
 
 COLOR_NAMES: dict[ItemColor, str] = {

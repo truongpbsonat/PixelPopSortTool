@@ -28,6 +28,7 @@ def test_serializer_writes_new_pop_sort_2_format():
         "piece",
         "gameMode",
         "difficulty",
+        "themeId",
         "level",
         "category",
         "mechanics",
@@ -53,6 +54,7 @@ def test_serializer_writes_new_pop_sort_2_format():
     assert data["mapType"] == "None"
     assert data["gameMode"] == "Classic"
     assert data["difficulty"] == "Easy"
+    assert data["themeId"] == 255
     assert data["mechanics"] == []
     assert data["time"] == 60
     assert data["piece"] == 5
