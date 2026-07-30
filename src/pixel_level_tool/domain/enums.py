@@ -98,6 +98,7 @@ class ThemeId(IntEnum):
     Theme2 = 2
     Theme3 = 3
     Theme4 = 4
+    Theme5 = 5
     Hard = 10
     SuperHard = 11
     None_ = 255
@@ -146,6 +147,7 @@ THEME_ID_LABELS: dict[ThemeId, str] = {
     ThemeId.Theme2: "Theme 2",
     ThemeId.Theme3: "Theme 3",
     ThemeId.Theme4: "Theme 4",
+    ThemeId.Theme5: "Theme 5",
     ThemeId.Hard: "Hard",
     ThemeId.SuperHard: "Super Hard",
 }

@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
             ThemeId.Theme2,
             ThemeId.Theme3,
             ThemeId.Theme4,
+            ThemeId.Theme5,
             ThemeId.Hard,
             ThemeId.SuperHard,
         ):
