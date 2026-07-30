@@ -172,8 +172,8 @@ class MainWindow(QMainWindow):
         self.difficulty_spin.setRange(0, 99999)
         self.theme_combo = QComboBox()
         self.theme_combo.setToolTip(
-            "Theme for this level. Hard / Super Hard themes are picked automatically"
-            " when the difficulty is set to Hard or Super Hard."
+            "Theme for this level. Hard / Super Hard difficulties default to the"
+            " matching theme, but you can still change it manually."
         )
         for theme in (
             ThemeId.None_,
@@ -392,7 +392,7 @@ class MainWindow(QMainWindow):
         self.validate_action.triggered.connect(self.validate)
         self.undo_action.triggered.connect(self.commands.undo)
         self.redo_action.triggered.connect(self.commands.redo)
-        self.difficulty_spin.valueChanged.connect(self._metadata_changed)
+        self.difficulty_spin.valueChanged.connect(self._difficulty_changed)
         self.theme_combo.currentIndexChanged.connect(self._metadata_changed)
         self.color_palette.color_changed.connect(self._replace_color_from_palette)
         self.color_palette.color_changed.connect(self.pixel_editor.set_color)
@@ -468,20 +468,21 @@ class MainWindow(QMainWindow):
         index = self.theme_combo.findData(value)
         return index if index != -1 else 0
 
-    def _metadata_changed(self) -> None:
-        changed = False
+    def _difficulty_changed(self) -> None:
         difficulty_value = self.difficulty_spin.value()
         forced_theme = self._DIFFICULTY_FORCED_THEME.get(difficulty_value)
-        self.theme_combo.setEnabled(forced_theme is None)
         if forced_theme is not None:
             index = self._theme_combo_index(forced_theme)
             if self.theme_combo.currentIndex() != index:
                 self.theme_combo.blockSignals(True)
                 self.theme_combo.setCurrentIndex(index)
                 self.theme_combo.blockSignals(False)
-            theme_value = forced_theme
-        else:
-            theme_value = int(self.theme_combo.currentData())
+        self._metadata_changed()
+
+    def _metadata_changed(self) -> None:
+        changed = False
+        difficulty_value = self.difficulty_spin.value()
+        theme_value = int(self.theme_combo.currentData())
 
         metadata_values = (
             ("difficulty", difficulty_value),
@@ -514,7 +515,6 @@ class MainWindow(QMainWindow):
         self.level_spin.setValue(self.level.level)
         self.difficulty_spin.setValue(self.level.difficulty)
         self.theme_combo.setCurrentIndex(self._theme_combo_index(self.level.theme_id))
-        self.theme_combo.setEnabled(self.level.difficulty not in self._DIFFICULTY_FORCED_THEME)
         self.mechanics_field.setText(", ".join(self.mechanics_scanner.scan(self.level)))
         for widget in (
             self.level_spin,
