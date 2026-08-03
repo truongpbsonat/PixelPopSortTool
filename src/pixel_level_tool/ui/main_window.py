@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from pixel_level_tool.domain.commands import CommandStack
 from pixel_level_tool.domain.enums import EMPTY_COLOR_ID, THEME_ID_LABELS, LevelDifficulty, ThemeId
 from pixel_level_tool.domain.level_models import PixelGridData, PixelLevelData
+from pixel_level_tool.services.box_autogen import AutoGenError, auto_generate_boxes, format_report
 from pixel_level_tool.services.image_importer import ImageImportError, import_image_to_color_ids
 from pixel_level_tool.services.legacy_level_importer import LegacyLevelImportError, import_legacy_pixel_grid
 from pixel_level_tool.services.level_converter import LevelConvertError, convert_file, convert_folder
@@ -40,6 +41,7 @@ from pixel_level_tool.services.mechanics_batch import scan_mechanics_in_folder
 from pixel_level_tool.services.mechanics_scanner import MechanicsScanner
 from pixel_level_tool.services.recent_files_service import RecentFilesService
 from pixel_level_tool.services.settings_service import SettingsService
+from pixel_level_tool.ui.dialogs.auto_gen_box_dialog import AutoGenBoxDialog
 from pixel_level_tool.ui.dialogs.image_import_dialog import ImageImportDialog
 from pixel_level_tool.ui.dialogs.new_level_dialog import NewLevelDialog
 from pixel_level_tool.ui.dialogs.resize_grid_dialog import ResizeGridDialog
@@ -221,6 +223,11 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(QLabel("Box Ball Grid"))
         left_layout.addWidget(self.shape_palette)
         left_layout.addWidget(self.box_editor, 1)
+        self.auto_gen_box_button = QPushButton("Auto Gen Box")
+        self.auto_gen_box_button.setToolTip(
+            "Build the whole Box Ball Grid from the Pixel Grid at a chosen difficulty"
+        )
+        self.auto_gen_box_button.clicked.connect(self.auto_gen_boxes)
         resize_box = QPushButton("Resize Box Grid")
         resize_box.clicked.connect(self.resize_box_grid)
         self.deselect_box_button = QPushButton("Deselect Box")
@@ -235,6 +242,7 @@ class MainWindow(QMainWindow):
         box_zoom_in.clicked.connect(self.box_editor.zoom_in)
         box_zoom_out.clicked.connect(self.box_editor.zoom_out)
         box_zoom_row = QHBoxLayout()
+        box_zoom_row.addWidget(self.auto_gen_box_button)
         box_zoom_row.addWidget(resize_box)
         box_zoom_row.addWidget(self.deselect_box_button)
         box_zoom_row.addWidget(self.swap_boxes_button)
@@ -793,6 +801,47 @@ class MainWindow(QMainWindow):
 
     def _default_file_name(self) -> str:
         return f"{self.level.level}.json" if self.level.category == 0 else f"{self.level.level}.{self.level.category}.json"
+
+    def auto_gen_boxes(self) -> None:
+        dialog = AutoGenBoxDialog(self.level.difficulty, self)
+        if not self._is_dialog_accepted(dialog.exec()):
+            return
+        options = dialog.options()
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            # Generate before creating the undo command so a failed run leaves no
+            # dirty, no-op history entry.
+            result = auto_generate_boxes(self.level, options)
+        except AutoGenError as exc:
+            QMessageBox.critical(self, "Auto Gen Box failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        deleted = sum(result.removed_pixels.values())
+        if deleted and QMessageBox.question(
+            self,
+            "Auto Gen Box",
+            f"Việc cân bằng màu sẽ xoá {deleted} pixel khỏi Pixel Grid để mọi màu chia hết "
+            "thành box nguyên.\n\nTiếp tục?",
+        ) != QMessageBox.Yes:
+            return
+
+        generated = result.level
+
+        def mutate() -> None:
+            self.level = generated
+
+        self._wrap_change("Auto gen box", mutate)
+        self.side_tabs.setCurrentWidget(self.validation_panel)
+        QMessageBox.information(self, "Báo cáo Auto Gen Box", format_report(result, options))
+        self.statusBar().showMessage(
+            f"Đã sinh {result.total_boxes} box trong "
+            f"{result.slot_cols}x{result.slot_rows} slot ({result.grid_cols}x{result.grid_rows}), "
+            f"piece={result.metrics.tray_slots}, {result.hidden_boxes} box ẩn",
+            8000,
+        )
 
     def resize_box_grid(self) -> None:
         dialog = ResizeGridDialog("Resize Box Grid", "Columns", "Rows", self.level.grid_cols, self.level.grid_rows, self)

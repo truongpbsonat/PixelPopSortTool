@@ -12,7 +12,7 @@ It intentionally does not edit Classic mode, cargo lanes/cargo effects, pixel mo
 
 The main window has a resizable splitter:
 
-- Left: Box Ball Grid, shape/direction/active controls, source box canvas.
+- Left: Box Ball Grid, shape/direction/active controls, source box canvas, **Auto Gen Box**.
 - Right: Pixel Grid, paint/erase/eyedropper/fill/import/trim-border controls, pixel canvas.
 - Side tabs: shared color palette, selected-box effect inspector, obstacle list/properties, and validation messages.
 
@@ -72,7 +72,8 @@ fields and can discover TrioBox and PopMachine data even though those cells are 
 powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ```
 
-Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, and GUI smoke startup.
+Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth), and GUI smoke
+startup.
 
 ## Build EXE
 
@@ -119,6 +120,138 @@ Box IDs are reassigned deterministically on save, sorted by `gridY`, then `gridX
 Elevator hidden cells continue in the same range. Obstacle IDs use Unity's type-specific ranges
 (`3001`, `5001`, `6001`, `6501`, `7001`, `8001`, and `8501`), and linked target IDs are remapped automatically.
 The tool accepts any integer `levelGridVersion` and preserves the loaded value when saving.
+
+## Auto Gen Box
+
+**Auto Gen Box** (button under the Box Ball Grid) replaces the whole Box Ball Grid with boxes generated
+from the current Pixel Grid at a chosen difficulty, in one undoable step. The output matches the shape of
+the hand-written level files: a solid rectangle of `Square_3x3` boxes on a 3-cell lattice, every box
+mono-color and `isActive: false`, `piece` at 5, and the difficulty carried by the `Hidden` effect. It also
+rewrites `difficulty` and the Hard / Super Hard `themeId`, and clears `obstacles` because they referenced
+the replaced boxes.
+
+### Assumed runtime rules
+
+The generator plays the level while it builds it, using this model of `GameMode.Pixel`:
+
+- The pixel grid is eaten **from the top row downwards, independently per column**. A column's
+  *frontier* is its topmost unfilled pixel, the same value the editor already draws as a line.
+- A picked box takes one of `piece` tray slots and keeps draining balls into any column whose
+  frontier matches its color, until the box is empty.
+- The player loses when all `piece` slots hold a box that cannot drain.
+- Every box on the grid can be picked, so the layout decides how much searching is needed.
+- A **tunnel** is the one exception: it is a queue, only its head can be taken, and taking the head
+  reveals the next box. An emptied tunnel does not vanish — it keeps its slot as a wall. So a box
+  buried in a tunnel forces the player to pull everything in front of it into the tray first.
+- Two arbitrary choices make it deterministic: a ball fills the left-most matching column, and the
+  oldest tray box drains first.
+
+If the Unity runtime differs, `services/pixel_gameplay.py` is the only file to change.
+
+### Pipeline
+
+1. **Balance** — a box holds exactly nine balls, so **every color needs a pixel count divisible by 9**.
+   Surplus pixels are deleted, starting at the bottom of the picture (eaten last) and preferring columns
+   away from the centre; a column is only emptied as a last resort. The count is confirmed before
+   anything changes.
+2. **Walkthrough** — the box multiset is fully determined by the pixel histogram (`count / 9` boxes per
+   color), so only the pick order is open. A depth-first search with memoisation finds an order that
+   wins at the target `piece`, exploring "drains completely" first so the order also reads naturally.
+   A plain greedy walk is far too weak here: on level 10 it demands `piece = 6` for a picture that is
+   playable at 3.
+3. **Layout** — the boxes fill the smallest lattice of 3x3 slots that holds them all, no larger than the
+   slot limit. Walkthrough order maps onto the slots front row first (`gridY = 0`, drawn at the bottom),
+   scrambled by difficulty. A picture too big for the whole lattice overflows into tunnels, and
+   **Tunnels → Always, as a mechanic** plants them even when everything fits.
+4. **Queue** — each tunnel gets a contiguous block of the walkthrough, buried by difficulty (see
+   [Tunnels](#tunnels)).
+5. **Hide** — a difficulty-driven share of boxes gets `Hidden`, spent on the rarest colors first and
+   never on the front row.
+6. **Certify** — the level is replayed **twice** — in walkthrough order and in the order the tunnel
+   queues actually force — its histograms are checked against the pixel grid, and the report shows the
+   measured numbers.
+
+### Difficulty
+
+`piece` stays at 5 at every difficulty, like the level files. The dial is `Hidden`: a hidden box shows no
+color, so the player cannot tell whether picking it wastes a tray slot.
+
+| Difficulty | Hidden boxes | Layout | Tunnels | Dig depth |
+| --- | --- | --- | --- | --- |
+| Easy | 0% | walkthrough order, eat the grid front row first | 1 x 3 boxes | 0 — released exactly when needed |
+| Medium | 15% | walkthrough order | 1 x 4 boxes | 1 box in the way |
+| Hard | 40% | next box within 4 boxes of the front row | 2 x 4 boxes | 2 boxes in the way |
+| SuperHard | 60% | next box anywhere on the grid | 2 x 5 boxes | 3 boxes in the way |
+
+`Hidden` is spent where it actually removes information: **on the rarest colors first**. Hiding one of a
+dozen identical boxes hides nothing, because the player just uses a visible one of the same color instead;
+hiding the only box of a color forces a hunt. Level 10 shows this exactly — of its 30 boxes it hides every
+LightPink (1/1), Lime (2/2) and Red (2/2), about half of Orange, White and Yellow, and **none of the 12
+Black ones**. The generator reproduces that ordering, spreads a partly-hidden color over distinct slot rows
+so the hidden boxes stay scattered rather than forming a solid band, and never hides the front row, so the
+player can always read what is immediately available.
+
+The report lists the hidden count per color and per slot row so the mix can be checked at a glance.
+
+### Capacity
+
+Every shape uses exactly one grid cell per ball, and a `Square_3x3` box covers a 3x3 block, so the box
+grid is a lattice of 3-cell slots: `gridCols = 3 x slot columns`. The default limit of 8x8 slots means
+`gridCols` / `gridRows` up to 24 and up to **64 boxes / 576 balls**, which covers any normal picture
+without a single tunnel. Level 10's 270 balls become a 5x6 slot lattice, exactly `gridCols 15`,
+`gridRows 18`.
+
+A tunnel lifts that ceiling: its `storedCells` live off-grid, so a picture with more boxes than the whole
+lattice holds still fits. Lower **Max box slots** in the dialog to force that path.
+
+### Tunnels
+
+A tunnel is a queue, and an emptied one stays on the grid as a **wall** — so it pays for itself twice: it
+stores boxes *and* eats a surface slot forever. A picture overflowing an `N` slot grid therefore needs room
+for `boxes - (N - tunnels)` stored boxes, not `boxes - N`.
+
+**Tunnels** in the dialog decides when they appear:
+
+- **Only when the boxes overflow the slot limit** (default) — the picture decides, and a picture that fits
+  gets no tunnel unasked.
+- **Always, as a mechanic** — the difficulty's tunnel count and depth are planted even when everything fits,
+  which is how the hand-made tunnel levels are built.
+
+The queue order is the difficulty dial, and it is meant to be **annoying, not unfair**:
+
+- **Dig depth 1** (Easy) releases every stored box exactly at the step the pixel grid needs its color, so
+  the tunnel never gets in the way.
+- **A wider window** reverses that many consecutive boxes, putting the soonest-needed one at the *back*: the
+  player pops one wrong color after another and only then reaches the one they came for. Reversal rather
+  than a shuffle is what makes the dig depth exactly `window - 1`, and therefore something the tray can be
+  checked against.
+
+Two things keep it fair. Each tunnel holds a **contiguous block** of the walkthrough, so everything dug out
+to reach a buried box was needed within a few steps anyway — the tray takes the hit for a moment instead of
+holding dead boxes for the rest of the level. And digging is **certified against `piece`**: the generator
+starts from the always-winnable depth 1 and widens one tunnel at a time, keeping a widening only while the
+forced pick order still wins. If `piece` cannot hold the digging, the report says the window was narrowed
+and by how much, per tunnel.
+
+Tunnels are parked on the **back rows, outermost column first**, like the hand-made levels: a permanent wall
+hurts least at the edges, and the outer columns keep the middle of the grid readable. A tunnel shows the
+color of its head, the only box it is currently offering. `Hidden` is never spent on stored boxes — a tunnel
+already conceals everything behind its head — so the report measures the hidden share against the surface
+boxes, the only ones that could carry it.
+
+### What the art has to look like
+
+The box count must factor into the slot rectangle for a solid grid — 30 boxes give a clean 5x6, while a
+prime count leaves empty slots and the report says so. Beyond that, how *forced* a level can be is set by
+the art, because each column exposes only its own topmost pixel:
+
+- **Full-width horizontal color bands** force the path: one color is at the frontier at a time, and bands
+  of one box worth of pixels keep every column in lockstep.
+- **Side-by-side vertical stripes** are the most forgiving shape, even at `piece = 1`, because every
+  color stays at some column's frontier forever.
+- **Finely mixed colors** stop a whole box from draining at once, which pushes `piece` up.
+
+The report always states the measured forced-step ratio and the minimum `piece` a perfect player needs.
 
 ## Box Effects And Obstacles
 
