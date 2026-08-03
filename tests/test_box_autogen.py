@@ -32,7 +32,10 @@ from pixel_level_tool.services.box_autogen import (
     bury_queue,
     choose_lattice,
     format_report,
+    layout_is_open,
     plan_tunnels,
+    plan_walls,
+    reachable_slots,
     tunnel_blocks,
 )
 from pixel_level_tool.services.level_serializer import dumps_level, level_from_dict, level_to_dict
@@ -126,11 +129,18 @@ def test_level_10_pixel_grid_is_already_box_aligned():
 
 
 def test_regenerating_level_10_reproduces_its_structure():
-    """Auto Gen Box must land on the same shape a designer authored by hand."""
-    result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Hard)))
+    """Auto Gen Box must land on the same shape a designer authored by hand.
+
+    Level 10 is a solid 5x6 rectangle, so the walls Hard would reserve are the
+    one thing that has to be switched off to compare like for like.
+    """
+    result = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Hard), walls=0)
+    )
     generated = result.level
 
     assert (result.slot_cols, result.slot_rows) == (5, 6)
+    assert result.wall_count == 0
     assert (generated.grid_cols, generated.grid_rows) == (15, 18)
     assert result.total_boxes == 30
     assert result.tunnel_count == 0
@@ -459,6 +469,131 @@ def test_the_report_explains_the_tunnel_queues():
 
 
 # --------------------------------------------------------------------------- #
+# Walls
+# --------------------------------------------------------------------------- #
+def wall_slots(result) -> set[tuple[int, int]]:
+    """Every lattice slot the generated level left without a cell."""
+    taken = {(cell.grid_x // SLOT, cell.grid_y // SLOT) for cell in result.level.grid_cells}
+    return {
+        (slot_x, slot_y)
+        for slot_y in range(result.slot_rows)
+        for slot_x in range(result.slot_cols)
+        if (slot_x, slot_y) not in taken
+    }
+
+
+def test_reachability_walks_around_a_wall_but_never_through_it():
+    # A ring of walls around (1, 1) seals it off; opening one side lets a route in.
+    sealed = [(0, 1), (2, 1), (1, 0), (1, 2)]
+    assert (1, 1) not in reachable_slots(3, 3, set(sealed))
+    assert (1, 1) in reachable_slots(3, 3, set(sealed[:3]))
+
+
+def test_a_box_pinched_on_two_sides_is_still_reachable_from_the_third():
+    """The rule the designer described: wall two sides, come around the rest."""
+    assert layout_is_open(5, 5, [(1, 2), (3, 2)], [])
+    assert not layout_is_open(5, 5, [(1, 2), (3, 2), (2, 1), (2, 3)], [])
+
+
+def test_a_full_lattice_without_walls_is_always_open():
+    assert layout_is_open(5, 6, [], [])
+    assert layout_is_open(5, 6, [], [(0, 5), (4, 5)])
+
+
+def test_walls_are_capped_at_one_per_four_boxes():
+    """A small picture cannot afford the pinch a large one shrugs off."""
+    profile = DIFFICULTY_PROFILES[int(LevelDifficulty.SuperHard)]
+    auto = AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard))
+    assert plan_walls(40, auto, profile) == profile.walls
+    assert plan_walls(6, auto, profile) == 1
+    assert plan_walls(3, auto, profile) == 0
+    assert plan_walls(40, AutoGenOptions(walls=0), profile) == 0
+    assert plan_walls(40, AutoGenOptions(walls=1), profile) == 1
+
+
+@pytest.mark.parametrize("difficulty", [int(LevelDifficulty.Easy), int(LevelDifficulty.Medium)])
+def test_easy_and_medium_keep_the_grid_solid(difficulty):
+    """Walls are a Hard mechanic; the gentle difficulties must not sprout them."""
+    assert DIFFICULTY_PROFILES[difficulty].walls == 0
+    result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=difficulty))
+    assert result.wall_count == 0
+
+
+@pytest.mark.parametrize(
+    "difficulty", [int(LevelDifficulty.Hard), int(LevelDifficulty.SuperHard)]
+)
+def test_hard_difficulties_pinch_a_box_between_two_walls(difficulty):
+    result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=difficulty))
+    assert result.wall_count >= DIFFICULTY_PROFILES[difficulty].walls
+    assert result.pinched_slots, "the point of a wall is to leave a box one way in"
+    for pinch_x, pinch_y in result.pinched_slots:
+        assert {(pinch_x - 1, pinch_y), (pinch_x + 1, pinch_y)} <= set(result.wall_slots)
+        assert (pinch_x, pinch_y) not in set(result.wall_slots), "a pinched slot holds a box"
+
+
+def test_walls_never_touch_so_they_cannot_grow_into_one_bar():
+    result = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), walls=4)
+    )
+    pinch_walls = {
+        slot
+        for pinch_x, pinch_y in result.pinched_slots
+        for slot in ((pinch_x - 1, pinch_y), (pinch_x + 1, pinch_y))
+    }
+    for x, y in pinch_walls:
+        assert (x, y + 1) not in pinch_walls and (x + 1, y) not in pinch_walls
+
+
+def test_wall_slots_are_exactly_the_slots_the_level_left_empty():
+    """Every empty lattice slot is a wall - the report cannot claim otherwise."""
+    for difficulty in ALL_DIFFICULTIES:
+        result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=difficulty))
+        assert set(result.wall_slots) == wall_slots(result)
+
+
+def test_walls_can_be_switched_off_and_asked_for_by_hand():
+    off = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), walls=0)
+    )
+    assert off.wall_count == 0 and off.pinched_slots == []
+    asked = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Easy), walls=2)
+    )
+    assert asked.wall_count >= 2 and asked.pinched_slots
+
+
+def test_a_negative_wall_count_is_rejected():
+    with pytest.raises(AutoGenError, match="Wall count"):
+        auto_generate_boxes(level_10(), AutoGenOptions(walls=-2))
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
+def test_walls_never_seal_a_box_off_on_arbitrary_pictures(difficulty, seed):
+    """Whatever the picture, no box may end up walled in on all four sides."""
+    level = noisy_level(12, 12, 5, seed=seed)
+    result = auto_generate_boxes(
+        level, AutoGenOptions(difficulty=difficulty, tunnel_mode="mechanic")
+    )
+    tunnels = [
+        (cell.grid_x // SLOT, cell.grid_y // SLOT)
+        for cell in result.level.grid_cells
+        if isinstance(cell, TunnelCellData)
+    ]
+    assert set(result.wall_slots) == wall_slots(result)
+    assert layout_is_open(result.slot_cols, result.slot_rows, result.wall_slots, tunnels)
+
+
+def test_the_report_explains_the_walls():
+    options = AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard))
+    result = auto_generate_boxes(level_10(), options)
+    report = format_report(result, options)
+    for fragment in ("Wall:", "vị trí slot", "box bị kẹp giữa hai wall"):
+        assert fragment in report
+    assert any("wall" in warning for warning in result.warnings)
+
+
+# --------------------------------------------------------------------------- #
 # Hidden effects drive the difficulty
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
@@ -638,7 +773,9 @@ def test_generation_is_deterministic():
 
 
 def test_generated_level_survives_a_serializer_round_trip():
-    result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Hard)))
+    result = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Hard), walls=0)
+    )
     reloaded = level_from_dict(level_to_dict(result.level))
     assert reloaded.source_histogram() == result.level.source_histogram()
     assert reloaded.target_histogram() == result.level.target_histogram()
@@ -674,7 +811,7 @@ def test_unknown_options_are_rejected():
 
 
 def test_report_covers_the_numbers_a_designer_checks():
-    options = AutoGenOptions(difficulty=int(LevelDifficulty.Hard))
+    options = AutoGenOptions(difficulty=int(LevelDifficulty.Hard), walls=0)
     report = format_report(auto_generate_boxes(level_10(), options), options)
     for fragment in ("Hard", "5x6 slot", "gridCols 15", "Box ẩn (Hidden):", "piece", "Square_3x3"):
         assert fragment in report

@@ -72,7 +72,7 @@ fields and can discover TrioBox and PopMachine data even though those cells are 
 powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ```
 
-Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth), and GUI smoke
+Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth, wall reachability), and GUI smoke
 startup.
 
 ## Build EXE
@@ -162,7 +162,8 @@ If the Unity runtime differs, `services/pixel_gameplay.py` is the only file to c
 3. **Layout** — the boxes fill the smallest lattice of 3x3 slots that holds them all, no larger than the
    slot limit. Walkthrough order maps onto the slots front row first (`gridY = 0`, drawn at the bottom),
    scrambled by difficulty. A picture too big for the whole lattice overflows into tunnels, and
-   **Tunnels → Always, as a mechanic** plants them even when everything fits.
+   **Tunnels → Always, as a mechanic** plants them even when everything fits. Any slot the boxes do not
+   fill is a **wall** (see [Walls](#walls)).
 4. **Queue** — each tunnel gets a contiguous block of the walkthrough, buried by difficulty (see
    [Tunnels](#tunnels)).
 5. **Hide** — a difficulty-driven share of boxes gets `Hidden`, spent on the rarest colors first and
@@ -176,12 +177,12 @@ If the Unity runtime differs, `services/pixel_gameplay.py` is the only file to c
 `piece` stays at 5 at every difficulty, like the level files. The dial is `Hidden`: a hidden box shows no
 color, so the player cannot tell whether picking it wastes a tray slot.
 
-| Difficulty | Hidden boxes | Layout | Tunnels | Dig depth |
-| --- | --- | --- | --- | --- |
-| Easy | 0% | walkthrough order, eat the grid front row first | 1 x 3 boxes | 0 — released exactly when needed |
-| Medium | 15% | walkthrough order | 1 x 4 boxes | 1 box in the way |
-| Hard | 40% | next box within 4 boxes of the front row | 2 x 4 boxes | 2 boxes in the way |
-| SuperHard | 60% | next box anywhere on the grid | 2 x 5 boxes | 3 boxes in the way |
+| Difficulty | Hidden boxes | Layout | Tunnels | Dig depth | Walls |
+| --- | --- | --- | --- | --- | --- |
+| Easy | 0% | walkthrough order, eat the grid front row first | 1 x 3 boxes | 0 — released exactly when needed | 0 |
+| Medium | 15% | walkthrough order | 1 x 4 boxes | 1 box in the way | 0 |
+| Hard | 40% | next box within 4 boxes of the front row | 2 x 4 boxes | 2 boxes in the way | 2 — one pinched box |
+| SuperHard | 60% | next box anywhere on the grid | 2 x 5 boxes | 3 boxes in the way | 4 — two pinched boxes |
 
 `Hidden` is spent where it actually removes information: **on the rarest colors first**. Hiding one of a
 dozen identical boxes hides nothing, because the player just uses a visible one of the same color instead;
@@ -239,10 +240,39 @@ color of its head, the only box it is currently offering. `Hidden` is never spen
 already conceals everything behind its head — so the report measures the hidden share against the surface
 boxes, the only ones that could carry it.
 
+### Walls
+
+**Every lattice slot the boxes do not fill is a wall.** A wall blocks the way in to the boxes beside it and
+never opens up, so walling two sides of a box leaves the player one way around to it — which is the whole
+point, and also why walling *every* side would strand a box for good.
+
+Walls are the most expensive knob here, because each one eats a slot *and* narrows its neighbours, so they
+are used sparingly:
+
+- Only **Hard** and **SuperHard** reserve any (2 and 4). Easy and Medium keep the grid solid.
+- The count is capped at **one wall per four boxes**, so a small picture cannot be strangled by the same
+  pinch a large one shrugs off.
+- **Wall (slot bỏ trống)** in the dialog overrides it; `0` switches walls off entirely.
+
+Placement follows the hand-made levels: walls go down as **mirrored pairs flanking one box** on the middle
+rows, never on neighbouring rows — two pinches side by side would merge into a bar that cuts the grid in
+half. Anything the pinches cannot spend falls back to the corners, where a wall costs its slot without
+narrowing anything. Leftovers the packing forced are placed the same way rather than piling up wherever the
+lattice ran out.
+
+Every placement is checked by a flood fill from outside the lattice: boxes are walked straight through
+(the designer confirmed every box on the grid can be picked, so boxes narrow nothing), walls and tunnels
+are not, and a candidate that would seal any box off is rejected. The finished level is re-checked before
+it is returned. The report lists the wall slots and which boxes ended up pinched.
+
+Reserving walls **grows the lattice**, because the boxes still need their own slots: level 10's 30 boxes fit
+a 5x6 exactly, but at Hard the 2 reserved walls make it a 4x8. Set walls to `0` to get the tight rectangle
+back.
+
 ### What the art has to look like
 
 The box count must factor into the slot rectangle for a solid grid — 30 boxes give a clean 5x6, while a
-prime count leaves empty slots and the report says so. Beyond that, how *forced* a level can be is set by
+prime count leaves empty slots, which are walls, and the report says so. Beyond that, how *forced* a level can be is set by
 the art, because each column exposes only its own topmost pixel:
 
 - **Full-width horizontal color bands** force the path: one color is at the frontier at a time, and bands

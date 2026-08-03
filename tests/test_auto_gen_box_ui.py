@@ -41,7 +41,7 @@ def test_dialog_shows_the_capacity_of_the_slot_limit(qtbot):
     dialog.slot_cols.setValue(5)
     dialog.slot_rows.setValue(6)
     text = dialog.capacity_label.text()
-    assert "15 x 18" in text and "30 boxes" in text and "270 balls" in text
+    assert "15 x 18" in text and "30 box" in text and "270 ball" in text
 
 
 def test_dialog_disables_every_tunnel_knob_when_tunnels_are_off(qtbot):
@@ -75,6 +75,17 @@ def test_dialog_can_ask_for_tunnels_as_a_mechanic_with_an_explicit_dig_depth(qtb
     assert options.tunnel_mode == "mechanic"
     assert options.tunnel_depth == 5
     assert options.dig_window == 3
+
+
+def test_dialog_defers_the_wall_count_to_the_difficulty_but_can_override_it(qtbot):
+    dialog = AutoGenBoxDialog(int(LevelDifficulty.Hard))
+    qtbot.addWidget(dialog)
+
+    assert dialog.options().walls is None, "Auto means the difficulty decides"
+    dialog.walls.setValue(0)
+    assert dialog.options().walls == 0, "0 must switch walls off, not read as Auto"
+    dialog.walls.setValue(3)
+    assert dialog.options().walls == 3
 
 
 def test_auto_gen_button_fills_the_box_grid_and_is_undoable(qtbot, monkeypatch):

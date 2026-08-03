@@ -225,7 +225,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.box_editor, 1)
         self.auto_gen_box_button = QPushButton("Auto Gen Box")
         self.auto_gen_box_button.setToolTip(
-            "Build the whole Box Ball Grid from the Pixel Grid at a chosen difficulty"
+            "Dựng toàn bộ Box Ball Grid từ Pixel Grid theo độ khó đã chọn"
         )
         self.auto_gen_box_button.clicked.connect(self.auto_gen_boxes)
         resize_box = QPushButton("Resize Box Grid")
@@ -839,7 +839,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Đã sinh {result.total_boxes} box trong "
             f"{result.slot_cols}x{result.slot_rows} slot ({result.grid_cols}x{result.grid_rows}), "
-            f"piece={result.metrics.tray_slots}, {result.hidden_boxes} box ẩn",
+            f"piece={result.metrics.tray_slots}, {result.hidden_boxes} box ẩn, "
+            f"{result.wall_count} wall",
             8000,
         )
 

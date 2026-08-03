@@ -20,6 +20,9 @@ Five stages:
    balls). Walkthrough order maps onto the slots front row first, scrambled by
    difficulty. A picture too big for the whole lattice overflows into tunnels,
    and ``tunnel_mode="mechanic"`` asks for tunnels even when everything fits.
+   Any slot the boxes do not fill is a **wall**: it blocks the route to the
+   boxes around it, so Hard and SuperHard reserve a couple on purpose to pinch a
+   box down to a single way in.
 4. **Queue** - each tunnel gets a contiguous block of the walkthrough, and the
    block is buried by difficulty: ``dig_window == 1`` releases every box exactly
    at the step it is needed, a wider window reverses that many boxes so the
@@ -89,6 +92,10 @@ LOCAL_SCRAMBLE_WINDOW = 4
 # most of the level, so overflow spreads over more tunnels instead.
 MAX_TUNNEL_DEPTH = 16
 
+# A wall costs a whole slot and narrows the way in to its neighbours, so it is
+# the most expensive difficulty knob here: at most one wall per this many boxes.
+WALL_BOX_BUDGET = 4
+
 
 class AutoGenError(ValueError):
     pass
@@ -118,20 +125,24 @@ class DifficultyProfile:
     # Boxes the player pops before the one they wanted, when it is buried worst.
     # 1 means "never buried": the head of the queue is always the next box needed.
     dig_window: int = 1
+    # Slots left empty on purpose. A wall blocks the way in to the boxes beside
+    # it, so this stays tiny: two walls pinch one box down to a single approach,
+    # which is the whole point, and more than that just strangles the grid.
+    walls: int = 0
 
 
 DIFFICULTY_PROFILES: dict[int, DifficultyProfile] = {
     int(LevelDifficulty.Easy): DifficultyProfile(
-        0.00, 5, "ordered", "Easy", tunnels=1, tunnel_depth=3, dig_window=1
+        0.00, 5, "ordered", "Easy", tunnels=1, tunnel_depth=3, dig_window=1, walls=0
     ),
     int(LevelDifficulty.Medium): DifficultyProfile(
-        0.15, 5, "ordered", "Medium", tunnels=1, tunnel_depth=4, dig_window=2
+        0.15, 5, "ordered", "Medium", tunnels=1, tunnel_depth=4, dig_window=2, walls=0
     ),
     int(LevelDifficulty.Hard): DifficultyProfile(
-        0.40, 5, "local", "Hard", tunnels=2, tunnel_depth=4, dig_window=3
+        0.40, 5, "local", "Hard", tunnels=2, tunnel_depth=4, dig_window=3, walls=2
     ),
     int(LevelDifficulty.SuperHard): DifficultyProfile(
-        0.60, 5, "global", "SuperHard", tunnels=2, tunnel_depth=5, dig_window=4
+        0.60, 5, "global", "SuperHard", tunnels=2, tunnel_depth=5, dig_window=4, walls=4
     ),
 }
 
@@ -156,6 +167,7 @@ class AutoGenOptions:
     tunnel_mode: str = "overflow"
     tunnel_depth: int = 0
     dig_window: int | None = None
+    walls: int | None = None
     apply_theme: bool = True
     seed: int | None = None
 
@@ -173,6 +185,8 @@ class AutoGenResult:
     dig_windows: list[int] = field(default_factory=list)
     release: TunnelRelease = field(default_factory=TunnelRelease)
     tunnel_queues: list[list[int]] = field(default_factory=list)
+    wall_slots: list[tuple[int, int]] = field(default_factory=list)
+    pinched_slots: list[tuple[int, int]] = field(default_factory=list)
     hidden_boxes: int = 0
     hidden_by_slot_row: list[tuple[int, int]] = field(default_factory=list)
     hidden_by_color: list[tuple[int, int, int]] = field(default_factory=list)
@@ -192,6 +206,10 @@ class AutoGenResult:
     @property
     def total_boxes(self) -> int:
         return self.surface_boxes + self.tunnel_boxes
+
+    @property
+    def wall_count(self) -> int:
+        return len(self.wall_slots)
 
     @property
     def hidden_ratio(self) -> float:
@@ -379,6 +397,185 @@ def _tunnel_slots(slots: list[tuple[int, int]], count: int) -> list[tuple[int, i
     return sorted(ordered[:count], key=lambda slot: (slot[1], slot[0]))
 
 
+# --------------------------------------------------------------------------- #
+# Stage 3b - walls
+# --------------------------------------------------------------------------- #
+def slot_neighbours(slot: tuple[int, int], cols: int, rows: int) -> list[tuple[int, int]]:
+    """The four slots sharing a side with ``slot``, clipped to the lattice."""
+    x, y = slot
+    return [
+        (nx, ny)
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
+        if 0 <= nx < cols and 0 <= ny < rows
+    ]
+
+
+def reachable_slots(cols: int, rows: int, blocked: set[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Slots the player can still route to from outside the lattice.
+
+    The flood starts on the border, because a box on the edge always has the
+    outside of the grid on one of its sides, and spreads through every slot that
+    is not blocked.
+    """
+    stack = [
+        (x, y)
+        for y in range(rows)
+        for x in range(cols)
+        if (x, y) not in blocked and (x in (0, cols - 1) or y in (0, rows - 1))
+    ]
+    seen = set(stack)
+    while stack:
+        for neighbour in slot_neighbours(stack.pop(), cols, rows):
+            if neighbour in seen or neighbour in blocked:
+                continue
+            seen.add(neighbour)
+            stack.append(neighbour)
+    return seen
+
+
+def layout_is_open(
+    cols: int,
+    rows: int,
+    walls: list[tuple[int, int]],
+    tunnels: list[tuple[int, int]],
+) -> bool:
+    """Can every box still be reached once the walls and tunnels block their slots?
+
+    A wall blocks the way in to the box beside it and never opens up again, so
+    walling two sides of a box leaves only the remaining sides to come around
+    through - and walling *every* side strands it for good, which is the one
+    thing this has to rule out. Boxes themselves are walked straight through:
+    the designer confirmed every box on the grid can be picked, so they narrow
+    nothing. A tunnel is permanent too - an emptied one stays as a wall - so it
+    blocks like one and only has to be approachable itself.
+    """
+    blocked = set(walls) | set(tunnels)
+    reachable = reachable_slots(cols, rows, blocked)
+    for y in range(rows):
+        for x in range(cols):
+            if (x, y) not in blocked and (x, y) not in reachable:
+                return False
+    for slot in tunnels:
+        x, y = slot
+        if x in (0, cols - 1) or y in (0, rows - 1):
+            continue
+        if not any(
+            neighbour in reachable for neighbour in slot_neighbours(slot, cols, rows)
+        ):
+            return False
+    return True
+
+
+def plan_walls(surface_boxes: int, options: AutoGenOptions, profile: DifficultyProfile) -> int:
+    """How many slots to reserve as walls, before the lattice knows its size.
+
+    Walls are the most expensive knob in here - each one eats a slot *and*
+    narrows its neighbours - so the difficulty's count is capped at one wall per
+    :data:`WALL_BOX_BUDGET` boxes: a small picture cannot afford the same pinch a
+    large one shrugs off.
+    """
+    wanted = profile.walls if options.walls is None else options.walls
+    if wanted <= 0:
+        return 0
+    return min(wanted, surface_boxes // WALL_BOX_BUDGET)
+
+
+def _wall_groups(cols: int, rows: int):
+    """Wall placements to try, best first.
+
+    A **pinch** - two walls flanking one box - is what the mechanic is for: the
+    box keeps a single way in, so the player has to come around to it instead of
+    taking the direct route. Pairs are mirrored around the middle column by
+    construction, like the hand-made levels, and the middle rows go first
+    because a pinch on the border only removes an approach the outside already
+    offers. Whatever the budget cannot spend on a pinch falls back to the
+    corners, where a wall costs its slot without narrowing anything.
+
+
+    ``strict`` asks the caller to keep the group clear of the walls already
+    placed, so walls stay separate pinches instead of merging into one bar that
+    cuts the grid in half. It is dropped for the fallbacks, which exist to find
+    room for leftovers no difficulty asked for.
+    """
+    centre_x, centre_y = (cols - 1) / 2, (rows - 1) / 2
+    centres = sorted(
+        ((x, y) for x in range(1, cols - 1) for y in range(1, rows - 1)),
+        key=lambda slot: (abs(slot[1] - centre_y), abs(slot[0] - centre_x), slot[1], slot[0]),
+    )
+    for x, y in centres:
+        yield [(x - 1, y), (x + 1, y)], (x, y), True
+
+    border = sorted(
+        (
+            (x, y)
+            for y in range(rows)
+            for x in range(cols)
+            if x in (0, cols - 1) or y in (0, rows - 1)
+        ),
+        key=lambda slot: (-slot[1], -abs(slot[0] - centre_x), slot[0]),
+    )
+    for slot in border:
+        yield [slot], None, True
+    for slot in border:
+        yield [slot], None, False
+    # Last resort for a lattice so full of leftovers that the border runs out.
+    for y in range(rows):
+        for x in range(cols):
+            yield [(x, y)], None, False
+
+
+def _wall_slots(
+    cols: int,
+    rows: int,
+    tunnel_slots: list[tuple[int, int]],
+    count: int,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Place ``count`` walls, and report which boxes they pinched.
+
+    Every slot the boxes do not fill *is* a wall, so this runs for leftovers the
+    packing forced as well as for the ones a difficulty asked for - better to
+    choose where they land than to let them pile up wherever the lattice ran out.
+    """
+    if count <= 0:
+        return [], []
+    chosen: list[tuple[int, int]] = []
+    pinched: list[tuple[int, int]] = []
+    pinched_rows: set[int] = set()
+    for group, pinch, strict in _wall_groups(cols, rows):
+        if len(chosen) >= count:
+            break
+        if len(chosen) + len(group) > count:
+            continue
+        # A pinched box must stay a box: walling it later would turn the pinch
+        # into a plain hole and cost the level the one approach it was built for.
+        if any(slot in tunnel_slots or slot in chosen or slot in pinched for slot in group):
+            continue
+        if pinch is not None:
+            if pinch in tunnel_slots or pinch in chosen:
+                continue
+            # Neighbouring rows would let two pinches grow into a solid bar.
+            if any(abs(pinch[1] - row) <= 1 for row in pinched_rows):
+                continue
+        if strict and any(
+            neighbour in chosen
+            for slot in group
+            for neighbour in slot_neighbours(slot, cols, rows)
+        ):
+            continue
+        if not layout_is_open(cols, rows, chosen + group, tunnel_slots):
+            continue
+        chosen.extend(group)
+        if pinch is not None:
+            pinched.append(pinch)
+            pinched_rows.add(pinch[1])
+    if len(chosen) != count:  # pragma: no cover - the border always has room first
+        raise AutoGenError(
+            f"Cannot leave {count} slot(s) empty in a {cols}x{rows} lattice without sealing a "
+            "box off from every side. Raise the slot limit or lower the wall count."
+        )
+    return sorted(chosen, key=lambda slot: (slot[1], slot[0])), pinched
+
+
 def tunnel_blocks(box_count: int, per_tunnel: list[int]) -> list[list[int]]:
     """Split the walkthrough into one contiguous block per tunnel, evenly spread.
 
@@ -416,7 +613,15 @@ def _layout(
     solution: Solution,
     options: AutoGenOptions,
     rng: random.Random,
-) -> tuple[int, int, list[Placement], list[list[int]], list[tuple[int, int]]]:
+) -> tuple[
+    int,
+    int,
+    list[Placement],
+    list[list[int]],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+]:
     specs = list(enumerate(solution.order))
     max_cols = max(1, min(options.max_slot_cols, MAX_BOX_SLOTS))
     max_rows = max(1, min(options.max_slot_rows, MAX_BOX_SLOTS))
@@ -425,15 +630,26 @@ def _layout(
 
     tunnel_count, stored = plan_tunnels(len(specs), capacity, options, profile)
 
+    # Walls need slots of their own, so the lattice is sized for them up front -
+    # asking for them afterwards would only steal room the boxes already claimed.
+    walls = plan_walls(len(specs) - stored, options, profile)
+    walls = min(walls, max(0, capacity - (len(specs) - stored) - tunnel_count))
     cols, rows = choose_lattice(
-        min(len(specs) - stored + tunnel_count, capacity), max_cols, max_rows
+        min(len(specs) - stored + tunnel_count + walls, capacity), max_cols, max_rows
     )
     slots = _slot_sequence(cols, rows)
     tunnel_slots = _tunnel_slots(slots, tunnel_count)
-    surface_slots = [slot for slot in slots if slot not in tunnel_slots]
+    open_slots = [slot for slot in slots if slot not in tunnel_slots]
     # Rounding the lattice down can leave fewer surface slots than planned; the
     # tunnels are elastic, so they absorb the difference.
-    stored = max(stored, len(specs) - len(surface_slots))
+    stored = max(stored, len(specs) - len(open_slots))
+
+    # Whatever the boxes do not fill is a wall, whether a difficulty asked for it
+    # or the packing simply left it over.
+    wall_slots, pinched = _wall_slots(
+        cols, rows, tunnel_slots, len(open_slots) - (len(specs) - stored)
+    )
+    surface_slots = [slot for slot in open_slots if slot not in set(wall_slots)]
 
     blocks = tunnel_blocks(len(specs), _split_evenly(stored, tunnel_count)) if tunnel_count else []
     in_tunnel = {index for block in blocks for index in block}
@@ -444,7 +660,7 @@ def _layout(
         Placement(spec_by_index[order_index], order_index, slot_x, slot_y)
         for order_index, (slot_x, slot_y) in zip(surface, surface_slots)
     ]
-    return cols, rows, placements, blocks, tunnel_slots
+    return cols, rows, placements, blocks, tunnel_slots, wall_slots, pinched
 
 
 # --------------------------------------------------------------------------- #
@@ -614,6 +830,8 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         raise AutoGenError(f"Unsupported tunnel mode {options.tunnel_mode!r}.")
     if options.dig_window is not None and options.dig_window < 1:
         raise AutoGenError(f"Tunnel dig window must be at least 1, got {options.dig_window}.")
+    if options.walls is not None and options.walls < 0:
+        raise AutoGenError(f"Wall count cannot be negative, got {options.walls}.")
 
     profile = DIFFICULTY_PROFILES[options.difficulty]
     working = level.clone()
@@ -655,7 +873,9 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
     solution.required_tray = minimum_tray(board, boxes, max_slots=tray_slots) or tray_slots
     seed = options.seed if options.seed is not None else working.level * 1000 + options.difficulty
     rng = random.Random(seed)
-    cols, rows, placements, blocks, tunnel_slots = _layout(solution, options, rng)
+    cols, rows, placements, blocks, tunnel_slots, wall_slots, pinched = _layout(
+        solution, options, rng
+    )
 
     wanted_window = profile.dig_window if options.dig_window is None else options.dig_window
     queues, dig_windows, release = plan_queues(
@@ -719,6 +939,8 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         raise AutoGenError("Internal error: some generated boxes were dropped during layout.")
     if working.source_histogram() != working.target_histogram():
         raise AutoGenError("Internal error: generated boxes do not match the pixel grid.")
+    if not layout_is_open(cols, rows, wall_slots, tunnel_slots):
+        raise AutoGenError("Internal error: a wall seals a box off from every side.")
     if not simulate_order(board, solution.order, rules):
         raise AutoGenError(
             f"Internal error: the generated walkthrough does not win with piece={tray_slots}."
@@ -781,12 +1003,18 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
             + f": chôn sâu hơn sẽ dồn nhiều box vào khay cùng lúc hơn mức piece={tray_slots} "
             "chứa được. Muốn đào sâu hơn thì nâng piece hoặc rút ngắn tunnel."
         )
-    empty_slots = cols * rows - len(placements) - used_tunnels
-    if empty_slots:
+    if wall_slots:
+        pinch = (
+            "; "
+            + ", ".join(f"({x}, {y})" for x, y in pinched)
+            + f" bị kẹp hai bên nên chỉ còn một đường vòng vào"
+            if pinched
+            else ""
+        )
         warnings.append(
-            f"{expected_boxes} box không xếp thành hình chữ nhật đầy, nên {empty_slots} slot của "
-            f"lưới {cols}x{rows} bị bỏ trống. Vẽ lại sao cho số box chia hết theo lưới thì mới "
-            "được lưới đặc."
+            f"{len(wall_slots)} slot của lưới {cols}x{rows} là wall{pinch}. Wall chặn đường vào "
+            "các box bên cạnh và không bao giờ mở ra, nên nó vừa ăn một slot vừa làm level khó "
+            "hơn hẳn — đặt walls=0 nếu thấy quá tay."
         )
     if tray_slots > target_tray:
         warnings.append(
@@ -810,6 +1038,8 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         dig_windows=dig_windows,
         release=release,
         tunnel_queues=queues,
+        wall_slots=wall_slots,
+        pinched_slots=pinched,
         hidden_boxes=len(hidden),
         hidden_by_slot_row=hidden_by_slot_row,
         hidden_by_color=hidden_by_color,
@@ -865,6 +1095,19 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
                 f"  tunnel {position} từ đầu hàng: "
                 + " > ".join(COLOR_NAMES[ItemColor(order[index].color)] for index in queue)
             )
+    if result.wall_slots:
+        lines += [
+            "",
+            f"Wall: {result.wall_count} slot bỏ trống (mục tiêu {profile.walls})",
+            "  vị trí slot (x, y): "
+            + ", ".join(f"({x}, {y})" for x, y in result.wall_slots),
+            "  box bị kẹp giữa hai wall: "
+            + (
+                ", ".join(f"({x}, {y})" for x, y in result.pinched_slots)
+                if result.pinched_slots
+                else "không có, wall chỉ nằm ở rìa lưới"
+            ),
+        ]
     if result.removed_pixels:
         total = sum(result.removed_pixels.values())
         detail = ", ".join(
