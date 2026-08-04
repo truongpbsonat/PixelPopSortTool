@@ -88,6 +88,82 @@ def test_dialog_defers_the_wall_count_to_the_difficulty_but_can_override_it(qtbo
     assert dialog.options().walls == 3
 
 
+def test_dialog_leaves_both_optional_obstacles_off_until_they_are_ticked(qtbot):
+    """ArrowLock and LinkedContainer are a per-level decision, not a difficulty one."""
+    dialog = AutoGenBoxDialog(int(LevelDifficulty.SuperHard))
+    qtbot.addWidget(dialog)
+
+    options = dialog.options()
+    assert options.use_arrow_lock is False
+    assert options.use_linked_container is False
+    assert not dialog.arrow_ratio.isEnabled()
+    assert not dialog.linked_pairs.isEnabled() and not dialog.linked_mode.isEnabled()
+
+
+def test_dialog_enables_the_arrow_and_link_knobs_when_the_obstacle_is_ticked(qtbot):
+    dialog = AutoGenBoxDialog(int(LevelDifficulty.Hard))
+    qtbot.addWidget(dialog)
+
+    dialog.use_arrow_lock.setChecked(True)
+    dialog.use_linked_container.setChecked(True)
+    assert dialog.arrow_ratio.isEnabled()
+    assert dialog.linked_pairs.isEnabled() and dialog.linked_mode.isEnabled()
+
+    options = dialog.options()
+    assert options.use_arrow_lock is True and options.use_linked_container is True
+    assert options.arrow_ratio is None, "Auto defers to the difficulty's arrow share"
+    assert options.linked_pairs is None, "Auto defers to the difficulty's pair count"
+    assert options.linked_mode == "auto", "Auto defers to the difficulty's link feel"
+
+
+def test_dialog_can_override_the_arrow_share_and_the_link_pairing(qtbot):
+    dialog = AutoGenBoxDialog(int(LevelDifficulty.Easy))
+    qtbot.addWidget(dialog)
+
+    dialog.use_arrow_lock.setChecked(True)
+    dialog.arrow_ratio.setValue(20)
+    dialog.use_linked_container.setChecked(True)
+    dialog.linked_pairs.setValue(0)
+    dialog.linked_mode.setCurrentIndex(dialog.linked_mode.findData("stall"))
+
+    options = dialog.options()
+    assert options.arrow_ratio == pytest.approx(0.20)
+    assert options.linked_pairs == 0, "0 must switch links off, not read as Auto"
+    assert options.linked_mode == "stall"
+
+
+def test_auto_gen_button_can_generate_both_optional_obstacles(qtbot, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.level = _banded_level(
+        [int(ItemColor.Red), int(ItemColor.Blue), int(ItemColor.Green), int(ItemColor.Red)],
+        width=6,
+    )
+    window._refresh_all()
+
+    monkeypatch.setattr(AutoGenBoxDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(
+        AutoGenBoxDialog,
+        "options",
+        lambda self: AutoGenOptions(
+            difficulty=int(LevelDifficulty.Hard),
+            use_arrow_lock=True,
+            use_linked_container=True,
+        ),
+    )
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *args, **kwargs: None))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *args, **kwargs: QMessageBox.Yes))
+
+    window.auto_gen_box_button.click()
+
+    assert window.level.obstacles, "the LinkedContainer obstacles must reach the level"
+    assert window.validate().errors == []
+    assert "LinkedContainer" in window.mechanics_field.text()
+
+    window.undo_action.trigger()
+    assert window.level.obstacles == [], "Auto Gen Box must be a single undoable step"
+
+
 def test_auto_gen_button_fills_the_box_grid_and_is_undoable(qtbot, monkeypatch):
     window = MainWindow()
     qtbot.addWidget(window)

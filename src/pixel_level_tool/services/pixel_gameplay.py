@@ -17,6 +17,14 @@ The runtime rules assumed here are the ones the level designer confirmed:
   it keeps its slot as a wall.  So a box buried in a tunnel forces the player to
   pull everything in front of it into the tray first, which is what
   :func:`resolve_pick_sequence` turns back into a plain pick order.
+* A **LinkedContainer** ties two boxes together: picking either one sends *both*
+  down, so the pick costs two tray slots at the same instant rather than one at a
+  time.  :func:`resolve_link_groups` folds the partners into one pick and
+  :func:`simulate_groups` is the replay that charges both slots at once.
+* An **ArrowLock** box cannot be opened until a box in the direction its arrow
+  points at has been opened.  That is a pure ordering constraint - it never
+  changes what lands in the tray - so it is enforced on the pick order in
+  :mod:`box_autogen` rather than modelled here.
 
 Two arbitrary choices make the simulation deterministic: a ball always fills the
 left-most matching column, and the oldest tray box drains first.
@@ -402,17 +410,69 @@ def resolve_pick_sequence(box_count: int, tunnel_queues: list[list[int]]) -> Tun
 
 def simulate_order(board: BoardState, order: list[BoxSpec], rules: GameRules) -> bool:
     """Replay an exact pick order and report whether it wins."""
+    return simulate_groups(board, [[spec] for spec in order], rules)
+
+
+# --------------------------------------------------------------------------- #
+# Linked containers
+# --------------------------------------------------------------------------- #
+def simulate_groups(board: BoardState, groups: list[list[BoxSpec]], rules: GameRules) -> bool:
+    """Replay a pick order where one pick can drop several boxes into the tray at once.
+
+    A linked pair is exactly that: the player taps one box and both slide down
+    together, so the tray has to have room for *all* of them at that instant. A
+    group of two therefore fails on a tray with one slot left, even though the
+    second box would have drained the moment the first emptied - the game never
+    gives the player that pause.
+    """
     board = board.clone()
     tray: list[TrayBox] = []
-    for spec in order:
+    for group in groups:
         drain(board, tray)
         _prune(tray)
-        if len(tray) >= rules.tray_slots:
+        if len(tray) + len(group) > rules.tray_slots:
             return False
-        tray.append(TrayBox(spec.color, spec.size, spec.size))
+        for spec in group:
+            tray.append(TrayBox(spec.color, spec.size, spec.size))
     drain(board, tray)
     _prune(tray)
     return board.done() and not tray
+
+
+def resolve_link_groups(sequence: list[int], links: list[tuple[int, int]]) -> list[list[int]]:
+    """Fold linked partners into a single pick, at whichever of the two comes first.
+
+    Taking either half of a pair takes both, so the pair happens at the earlier of
+    its two walkthrough steps and the later step is simply gone - the box is
+    already in the tray by then. A partner is only ever pulled *forward*, never
+    delayed, which is what keeps every other ordering constraint on the level
+    (tunnel releases, arrow locks) still satisfied afterwards.
+    """
+    partner: dict[int, int] = {}
+    for left, right in links:
+        if left == right:
+            raise GameplayError(f"A LinkedContainer cannot link box {left} to itself.")
+        for index in (left, right):
+            if index in partner:
+                raise GameplayError(f"Box {index} belongs to more than one LinkedContainer.")
+        partner[left] = right
+        partner[right] = left
+
+    groups: list[list[int]] = []
+    taken: set[int] = set()
+    for index in sequence:
+        if index in taken:
+            continue
+        group = [index]
+        taken.add(index)
+        mate = partner.get(index)
+        if mate is not None and mate not in taken:
+            group.append(mate)
+            taken.add(mate)
+        groups.append(group)
+    if sum(len(group) for group in groups) != len(sequence):  # pragma: no cover - folding is exact
+        raise GameplayError("Linked containers do not release every box exactly once.")
+    return groups
 
 
 # --------------------------------------------------------------------------- #

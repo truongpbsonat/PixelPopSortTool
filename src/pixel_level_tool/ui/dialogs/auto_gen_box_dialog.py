@@ -31,6 +31,11 @@ class AutoGenBoxDialog(QDialog):
         ("Chỉ khi số box vượt giới hạn slot", "overflow"),
         ("Luôn luôn, như một cơ chế", "mechanic"),
     )
+    _LINKED_MODES = (
+        ("Theo độ khó", "auto"),
+        ("Dễ — hai box đều là màu đang cần", "sync"),
+        ("Khó — box đi kèm là màu chưa cần", "stall"),
+    )
     # Kiểu xếp layout của từng độ khó, dịch từ DifficultyProfile.scramble.
     _SCRAMBLE_LABELS = {
         "ordered": "xếp đúng thứ tự giải",
@@ -70,7 +75,9 @@ class AutoGenBoxDialog(QDialog):
             "SuperHard ẩn ~60% và đặt box cần tiếp theo ở bất kỳ đâu trên lưới.\n"
             "Độ chôn cũng cùng một nấc chỉnh đó cho tunnel: Easy nhả box ra đúng lúc pixel grid\n"
             "cần, còn SuperHard chôn nó sau ba box khác.\n"
-            "Riêng Hard và SuperHard còn chừa sẵn vài slot làm wall để kẹp box lại."
+            "Riêng Hard và SuperHard còn chừa sẵn vài slot làm wall để kẹp box lại.\n"
+            "ArrowLock và LinkedContainer là tuỳ chọn riêng bên dưới; khi bật, độ khó quyết định\n"
+            "số box bị khoá và số cặp được nối, và Hard/SuperHard nối link theo kiểu khó."
         )
 
         self.slot_cols = QSpinBox()
@@ -164,6 +171,53 @@ class AutoGenBoxDialog(QDialog):
             "Wall vừa ăn một slot vừa làm level khó hơn hẳn nên dùng dè."
         )
 
+        # Hai obstacle dưới đây là tuỳ chọn của từng level: mặc định tắt, bật lên
+        # thì độ khó mới quyết định liều lượng.
+        self.use_arrow_lock = QCheckBox("Có ArrowLock trong level này")
+        self.use_arrow_lock.setToolTip(
+            "Box mang ArrowLock hiện một mũi tên và chỉ mở được sau khi người chơi đã mở một box\n"
+            "nằm ở hướng mũi tên đó. Mũi tên luôn được chỉ vào một box thật nằm sát bên và box đó\n"
+            "chắc chắn được mở trước trong lời giải, nên khoá luôn có chìa — không bao giờ chỉ vào\n"
+            "wall, vào tunnel hay ra ngoài lưới, vì như vậy box sẽ không bao giờ mở được.\n"
+            "Riêng ArrowLock đã khá khó, nên số box bị khoá được giữ ở mức thấp."
+        )
+        self.arrow_ratio = QSpinBox()
+        self.arrow_ratio.setRange(-1, 100)
+        self.arrow_ratio.setValue(-1)
+        self.arrow_ratio.setSpecialValueText("Auto")
+        self.arrow_ratio.setSuffix(" %")
+        self.arrow_ratio.setToolTip(
+            "Tỷ lệ box mặt ngoài mang ArrowLock. Auto lấy theo độ khó (Easy 8%, Medium 15%,\n"
+            "Hard 25%, SuperHard 33%) và bị giới hạn tối đa 1 box khoá trên mỗi 3 box, để lưới\n"
+            "không bao giờ rơi vào cảnh không còn box nào bấm được.\n"
+            "Box ẩn và box đã bị link sẽ không nhận ArrowLock."
+        )
+
+        self.use_linked_container = QCheckBox("Có LinkedContainer trong level này")
+        self.use_linked_container.setToolTip(
+            "LinkedContainer nối hai box nằm sát nhau: bấm một box thì cả hai cùng xuống băng\n"
+            "chuyền, nên một lần bấm tốn hai ô khay cùng lúc.\n"
+            "Dễ: cả hai box đều là màu bên dưới đang cần, khay rút cạn ngay.\n"
+            "Khó: cố tình nối một box đang cần với một box màu chưa cần, box kia ngồi chiếm ô khay\n"
+            "và làm băng chuyền đầy lên — dùng cẩn thận.\n"
+            "Mọi cặp đều được chơi thử lại, cặp nào làm tràn khay thì bị bỏ."
+        )
+        self.linked_pairs = QSpinBox()
+        self.linked_pairs.setRange(-1, 16)
+        self.linked_pairs.setValue(-1)
+        self.linked_pairs.setSpecialValueText("Auto")
+        self.linked_pairs.setToolTip(
+            "Số cặp box được nối. Auto lấy theo độ khó (Easy 2, Medium 3, Hard 3, SuperHard 4)\n"
+            "và bị giới hạn tối đa 1 cặp trên mỗi 4 box."
+        )
+        self.linked_mode = QComboBox()
+        for label, value in self._LINKED_MODES:
+            self.linked_mode.addItem(label, value)
+        self.linked_mode.setToolTip(
+            "Easy/Medium nối hai box mà bên dưới đang cần gần như cùng lúc, nên link gần như miễn "
+            "phí.\nHard/SuperHard cố tình nối một box đang cần với một box còn lâu mới cần."
+        )
+
         self.apply_theme = QCheckBox("Áp dụng theme Hard / Super Hard")
         self.apply_theme.setChecked(True)
 
@@ -180,6 +234,11 @@ class AutoGenBoxDialog(QDialog):
         layout.addRow("Số box mỗi tunnel", self.tunnel_depth)
         layout.addRow("Độ chôn trong tunnel", self.dig_window)
         layout.addRow("", self.allow_tunnels)
+        layout.addRow("", self.use_arrow_lock)
+        layout.addRow("Tỷ lệ box ArrowLock", self.arrow_ratio)
+        layout.addRow("", self.use_linked_container)
+        layout.addRow("Số cặp LinkedContainer", self.linked_pairs)
+        layout.addRow("Kiểu LinkedContainer", self.linked_mode)
         layout.addRow("", self.apply_theme)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -191,6 +250,11 @@ class AutoGenBoxDialog(QDialog):
 
         for widget in (self.max_tunnels, self.tunnel_depth, self.dig_window, self.tunnel_mode):
             self.allow_tunnels.toggled.connect(widget.setEnabled)
+        self.use_arrow_lock.toggled.connect(self.arrow_ratio.setEnabled)
+        self.arrow_ratio.setEnabled(False)
+        for widget in (self.linked_pairs, self.linked_mode):
+            self.use_linked_container.toggled.connect(widget.setEnabled)
+            widget.setEnabled(False)
         self._update_capacity()
 
     def _update_capacity(self) -> None:
@@ -204,7 +268,14 @@ class AutoGenBoxDialog(QDialog):
         hidden = self.hidden_ratio.value()
         dig = self.dig_window.value()
         walls = self.walls.value()
+        arrow = self.arrow_ratio.value()
+        pairs = self.linked_pairs.value()
         return AutoGenOptions(
+            use_arrow_lock=self.use_arrow_lock.isChecked(),
+            arrow_ratio=None if arrow < 0 else arrow / 100.0,
+            use_linked_container=self.use_linked_container.isChecked(),
+            linked_pairs=None if pairs < 0 else pairs,
+            linked_mode=str(self.linked_mode.currentData()),
             walls=None if walls < 0 else walls,
             tunnel_mode=str(self.tunnel_mode.currentData()),
             tunnel_depth=self.tunnel_depth.value(),

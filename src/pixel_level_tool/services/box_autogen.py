@@ -31,10 +31,21 @@ Five stages:
 5. **Hide** - a difficulty-driven share of the boxes gets the ``Hidden`` effect,
    weighted towards the back rows and never on the front row, so the player can
    always see what is immediately available but not what is coming.
-6. **Certify** - the level is replayed with
+6. **Link** - opt-in ``LinkedContainer`` obstacles tie pairs of neighbouring boxes
+   together: tapping one sends both down, so the pick costs two tray slots at
+   once. ``linked_mode="sync"`` pairs boxes the board wants within a step or two
+   of each other, so the second half drains straight away and the link is a
+   freebie; ``"stall"`` deliberately pairs a wanted box with one needed much
+   later, so the partner squats in the tray and the conveyor runs full.
+7. **Lock** - opt-in ``ArrowLock`` effects shut a box until a box in the arrow's
+   direction has been opened. The arrow only ever points at a real neighbouring
+   box that the walkthrough opens *earlier*, never at a wall, a tunnel or off the
+   grid, so the lock always has a key and the certified order stays legal.
+8. **Certify** - the level is replayed with
    :func:`pixel_gameplay.simulate_order`, both in walkthrough order and in the
-   order the tunnels actually force, its histograms are checked against the pixel
-   grid, and :func:`pixel_gameplay.measure_difficulty` scores it.
+   order the tunnels, links and locks actually force, its histograms are checked
+   against the pixel grid, and :func:`pixel_gameplay.measure_difficulty` scores
+   it.
 """
 
 import random
@@ -51,8 +62,11 @@ from pixel_level_tool.domain.enums import (
     ThemeId,
 )
 from pixel_level_tool.domain.level_models import (
+    ArrowLockCellEffectData,
     BoxCellData,
+    CellEffectData,
     HiddenCellEffectData,
+    LinkedContainerObstacleData,
     PixelGridData,
     PixelLevelData,
     TunnelCellData,
@@ -68,7 +82,9 @@ from pixel_level_tool.services.pixel_gameplay import (
     box_multiset,
     measure_difficulty,
     minimum_tray,
+    resolve_link_groups,
     resolve_pick_sequence,
+    simulate_groups,
     simulate_order,
     solve_order,
 )
@@ -83,6 +99,7 @@ MAX_TRAY_SLOTS = 8
 ACTIVE_POLICIES = ("none", "row0", "all")
 SCRAMBLE_MODES = ("ordered", "local", "global")
 TUNNEL_MODES = ("overflow", "mechanic")
+LINKED_MODES = ("auto", "sync", "stall")
 
 # How far the correct next box may sit from the front of the grid, in boxes,
 # when the layout is only locally scrambled.
@@ -95,6 +112,21 @@ MAX_TUNNEL_DEPTH = 16
 # A wall costs a whole slot and narrows the way in to its neighbours, so it is
 # the most expensive difficulty knob here: at most one wall per this many boxes.
 WALL_BOX_BUDGET = 4
+
+# An ArrowLock box is dead weight until its key box goes, so a grid full of them
+# leaves the player nothing to tap: at most one locked box per this many boxes.
+ARROW_BOX_BUDGET = 3
+
+# A linked pair spends two tray slots on one tap, so it is priced like a wall:
+# at most one pair (two boxes) per this many boxes.
+LINK_BOX_BUDGET = 4
+
+# How far apart, in picks, the two halves of a link may be.  A "sync" pair is
+# wanted at almost the same moment, so the second half drains at once and the
+# link costs nothing; a "stall" pair reaches this far ahead for its partner, so
+# the partner sits in the tray with no column to pour into.
+MAX_SYNC_GAP = 2
+MIN_STALL_GAP = 3
 
 
 class AutoGenError(ValueError):
@@ -129,20 +161,33 @@ class DifficultyProfile:
     # it, so this stays tiny: two walls pinch one box down to a single approach,
     # which is the whole point, and more than that just strangles the grid.
     walls: int = 0
+    # ArrowLock, only when the option is on. An arrow box is shut until the box it
+    # points at is gone, which is a hard mechanic even in small doses, so this
+    # share stays well under the ARROW_BOX_BUDGET ceiling at the easy end.
+    arrow_ratio: float = 0.0
+    # LinkedContainer, only when the option is on: how many pairs to tie, and
+    # whether the partner is a box the board wants right away ("sync", a freebie)
+    # or one it will not want for a while ("stall", a squatted tray slot).
+    linked_pairs: int = 0
+    linked_mode: str = "sync"
 
 
 DIFFICULTY_PROFILES: dict[int, DifficultyProfile] = {
     int(LevelDifficulty.Easy): DifficultyProfile(
-        0.00, 5, "ordered", "Easy", tunnels=1, tunnel_depth=3, dig_window=1, walls=0
+        0.00, 5, "ordered", "Easy", tunnels=1, tunnel_depth=3, dig_window=1, walls=0,
+        arrow_ratio=0.08, linked_pairs=2, linked_mode="sync",
     ),
     int(LevelDifficulty.Medium): DifficultyProfile(
-        0.15, 5, "ordered", "Medium", tunnels=1, tunnel_depth=4, dig_window=2, walls=0
+        0.15, 5, "ordered", "Medium", tunnels=1, tunnel_depth=4, dig_window=2, walls=0,
+        arrow_ratio=0.15, linked_pairs=3, linked_mode="sync",
     ),
     int(LevelDifficulty.Hard): DifficultyProfile(
-        0.40, 5, "local", "Hard", tunnels=2, tunnel_depth=4, dig_window=3, walls=2
+        0.40, 5, "local", "Hard", tunnels=2, tunnel_depth=4, dig_window=3, walls=2,
+        arrow_ratio=0.25, linked_pairs=3, linked_mode="stall",
     ),
     int(LevelDifficulty.SuperHard): DifficultyProfile(
-        0.60, 5, "global", "SuperHard", tunnels=2, tunnel_depth=5, dig_window=4, walls=4
+        0.60, 5, "global", "SuperHard", tunnels=2, tunnel_depth=5, dig_window=4, walls=4,
+        arrow_ratio=0.33, linked_pairs=4, linked_mode="stall",
     ),
 }
 
@@ -168,6 +213,13 @@ class AutoGenOptions:
     tunnel_depth: int = 0
     dig_window: int | None = None
     walls: int | None = None
+    # Both mechanics are opt-in per level: the designer decides up front whether
+    # this level has them at all, and only then does the difficulty set the dose.
+    use_arrow_lock: bool = False
+    arrow_ratio: float | None = None
+    use_linked_container: bool = False
+    linked_pairs: int | None = None
+    linked_mode: str = "auto"
     apply_theme: bool = True
     seed: int | None = None
 
@@ -190,6 +242,15 @@ class AutoGenResult:
     hidden_boxes: int = 0
     hidden_by_slot_row: list[tuple[int, int]] = field(default_factory=list)
     hidden_by_color: list[tuple[int, int, int]] = field(default_factory=list)
+    # Per ArrowLock box: its slot, the direction the arrow points, the slot of the
+    # key box it points at, and how many picks later than the key it is opened.
+    arrow_locks: list[tuple[tuple[int, int], Direction, tuple[int, int], int]] = field(
+        default_factory=list
+    )
+    # (slot, slot, gap in picks) per LinkedContainer pair.
+    linked_pairs: list[tuple[tuple[int, int], tuple[int, int], int]] = field(default_factory=list)
+    linked_mode: str = "sync"
+    play_groups: list[list[int]] = field(default_factory=list)
     removed_pixels: Counter[int] = field(default_factory=Counter)
     emptied_columns: list[int] = field(default_factory=list)
     dropped_obstacles: int = 0
@@ -230,10 +291,34 @@ class AutoGenResult:
         return max(self.dig_windows, default=1)
 
     @property
-    def play_order(self) -> list[BoxSpec]:
-        """The walkthrough as the tunnels force it to be played."""
+    def arrow_count(self) -> int:
+        return len(self.arrow_locks)
+
+    @property
+    def link_count(self) -> int:
+        return len(self.linked_pairs)
+
+    @property
+    def max_link_gap(self) -> int:
+        """Longest a linked partner squats in the tray, in picks."""
+        return max((gap for _, _, gap in self.linked_pairs), default=0)
+
+    @property
+    def max_arrow_wait(self) -> int:
+        """Longest an arrow lock stays shut after the level starts, in picks."""
+        return max((wait for _, _, _, wait in self.arrow_locks), default=0)
+
+    @property
+    def play_groups_specs(self) -> list[list[BoxSpec]]:
+        """The real play order, one entry per tap, several boxes when they are linked."""
         order = self.solution.order
-        return [order[index] for index in self.release.sequence]
+        groups = self.play_groups or [[index] for index in self.release.sequence]
+        return [[order[index] for index in group] for group in groups]
+
+    @property
+    def play_order(self) -> list[BoxSpec]:
+        """The walkthrough as the tunnels and links force it to be played."""
+        return [spec for group in self.play_groups_specs for spec in group]
 
 
 # --------------------------------------------------------------------------- #
@@ -796,6 +881,221 @@ def _spread_over_rows(group: list[Placement], take: int, rng: random.Random) -> 
 
 
 # --------------------------------------------------------------------------- #
+# Stage 6 - link boxes in pairs
+# --------------------------------------------------------------------------- #
+def plan_link_count(surface_boxes: int, options: AutoGenOptions, profile: DifficultyProfile) -> int:
+    """How many LinkedContainer pairs to tie, before knowing which boxes can take one."""
+    if not options.use_linked_container:
+        return 0
+    wanted = profile.linked_pairs if options.linked_pairs is None else options.linked_pairs
+    if wanted <= 0:
+        return 0
+    # Two boxes per pair, and a pair spends two tray slots on one tap, so a small
+    # grid cannot carry the same number of links a large one shrugs off.
+    return min(wanted, surface_boxes // LINK_BOX_BUDGET)
+
+
+def link_candidates(
+    placements: list[Placement],
+    hidden: set[int],
+    position: dict[int, int],
+    mode: str,
+    rng: random.Random,
+) -> list[tuple[Placement, Placement, int]]:
+    """Pairs of side-by-side boxes that may be linked, best first for ``mode``.
+
+    A link is only ever tied between two boxes that sit next to each other on the
+    grid - that is what the obstacle draws - and only between two boxes with the
+    same effects, because the validator rejects a pair where one half is hidden
+    and the other is not.
+
+    ``gap`` is how far apart the two halves sit in the pick order, which is the
+    whole difficulty of the mechanic. ``sync`` wants it as small as possible: both
+    colors are wanted at once, the tray drains them immediately and the link is a
+    gift. ``stall`` wants it as large as the level survives: the partner is a color
+    nothing below is asking for, so it squats in the tray and the conveyor fills
+    up.
+    """
+    by_slot = {(placement.slot_x, placement.slot_y): placement for placement in placements}
+    pairs: list[tuple[Placement, Placement, int]] = []
+    for placement in placements:
+        # Right and up only: every orthogonal pair is then visited exactly once.
+        for dx, dy in ((1, 0), (0, 1)):
+            mate = by_slot.get((placement.slot_x + dx, placement.slot_y + dy))
+            if mate is None:
+                continue
+            if (placement.order_index in hidden) != (mate.order_index in hidden):
+                continue
+            gap = abs(position[placement.order_index] - position[mate.order_index])
+            if mode == "stall" and gap < MIN_STALL_GAP:
+                continue
+            if mode == "sync" and gap > MAX_SYNC_GAP:
+                continue
+            # The random tie-break keeps equally good pairs from all clustering in
+            # one corner of the grid.
+            rank = (-gap if mode == "stall" else gap, rng.random())
+            pairs.append((rank, placement, mate, gap))
+    pairs.sort(key=lambda pair: pair[0])
+    return [(left, right, gap) for _, left, right, gap in pairs]
+
+
+def plan_links(
+    board: BoardState,
+    order: list[BoxSpec],
+    sequence: list[int],
+    placements: list[Placement],
+    hidden: set[int],
+    count: int,
+    mode: str,
+    rules: GameRules,
+    rng: random.Random,
+) -> tuple[list[tuple[Placement, Placement, int]], list[list[int]]]:
+    """Tie up to ``count`` pairs, keeping only the ones the tray survives.
+
+    A link is never fair by construction: dropping two boxes on one tap needs two
+    free tray slots at that instant, and a ``stall`` partner then holds one of them
+    for the next ``gap`` picks. So each candidate is tried against a full replay
+    and kept only if the run still wins - the level stays beatable with the chosen
+    ``piece`` no matter how mean the pairing looks.
+    """
+    groups = [[index] for index in sequence]
+    if count <= 0:
+        return [], groups
+    position = {index: slot for slot, index in enumerate(sequence)}
+    chosen: list[tuple[Placement, Placement, int]] = []
+    used: set[int] = set()
+    for left, right, gap in link_candidates(placements, hidden, position, mode, rng):
+        if len(chosen) >= count:
+            break
+        if left.order_index in used or right.order_index in used:
+            continue
+        links = [(pair[0].order_index, pair[1].order_index) for pair in chosen]
+        links.append((left.order_index, right.order_index))
+        trial = resolve_link_groups(sequence, links)
+        if not simulate_groups(board, [[order[index] for index in group] for group in trial], rules):
+            continue
+        chosen.append((left, right, gap))
+        used.update({left.order_index, right.order_index})
+        groups = trial
+    return chosen, groups
+
+
+# --------------------------------------------------------------------------- #
+# Stage 7 - lock boxes behind an arrow
+# --------------------------------------------------------------------------- #
+# Mirrors LevelValidator._has_arrow_blocker_for_cell: the box grid's gridY grows
+# away from the front row, so Up is +1 and Down is -1.
+DIRECTION_STEPS: dict[Direction, tuple[int, int]] = {
+    Direction.Up: (0, 1),
+    Direction.Down: (0, -1),
+    Direction.Left: (-1, 0),
+    Direction.Right: (1, 0),
+}
+
+
+def plan_arrow_count(surface_boxes: int, options: AutoGenOptions, profile: DifficultyProfile) -> int:
+    """How many boxes to lock behind an arrow, before knowing which ones can take one."""
+    if not options.use_arrow_lock:
+        return 0
+    ratio = profile.arrow_ratio if options.arrow_ratio is None else options.arrow_ratio
+    wanted = round(ratio * surface_boxes)
+    if wanted <= 0:
+        return 0
+    # A locked box is unavailable until its key goes, so locking too many at once
+    # leaves the player staring at a grid with nothing tappable on it.
+    return min(wanted, surface_boxes // ARROW_BOX_BUDGET)
+
+
+def arrow_candidates(
+    placements: list[Placement],
+    position: dict[int, int],
+    blocked: set[int],
+) -> list[tuple[Placement, Direction, Placement]]:
+    """Boxes that can carry an ArrowLock, with the direction and the key box.
+
+    Two rules decide this, and both come straight from what the mechanic does:
+
+    * The arrow has to point at a **real box** on the neighbouring slot. Pointing
+      at a wall, at a tunnel or off the edge of the grid gives the lock no key at
+      all and the box can never be opened - that is the failure the designer
+      called out, and the validator rejects it too.
+    * That key box has to be opened **before** the locked one in the certified
+      walkthrough. Otherwise the order the solver proved wins is illegal, and the
+      level would need a different solution nobody has checked.
+
+    The direction chosen per box is the one whose key is opened as late as still
+    allowed, so the lock stays shut for as long as possible instead of being
+    pointed at something the player clears in the first few taps.
+    """
+    by_slot = {(placement.slot_x, placement.slot_y): placement for placement in placements}
+    candidates: list[tuple[Placement, Direction, Placement]] = []
+    for placement in placements:
+        if placement.order_index in blocked:
+            continue
+        best: tuple[int, int, Direction, Placement] | None = None
+        for direction, (dx, dy) in DIRECTION_STEPS.items():
+            key = by_slot.get((placement.slot_x + dx, placement.slot_y + dy))
+            if key is None:
+                continue
+            if position[key.order_index] >= position[placement.order_index]:
+                continue
+            option = (
+                position[placement.order_index] - position[key.order_index],
+                -int(direction),
+                direction,
+                key,
+            )
+            if best is None or option[:2] > best[:2]:
+                best = option
+        if best is not None:
+            candidates.append((placement, best[2], best[3]))
+    return candidates
+
+
+def plan_arrow_locks(
+    placements: list[Placement],
+    position: dict[int, int],
+    blocked: set[int],
+    count: int,
+    rng: random.Random,
+) -> dict[int, tuple[Direction, Placement]]:
+    """Pick which boxes get an ArrowLock, scattered over the grid.
+
+    ``blocked`` holds the boxes that must stay plain: the hidden ones, because a
+    box that shows neither its color nor an open state is unreadable, and the
+    linked ones, because the validator forbids a LinkedContainer from targeting an
+    ArrowLock box.
+    """
+    if count <= 0:
+        return {}
+    candidates = arrow_candidates(placements, position, blocked)
+    rng.shuffle(candidates)
+    chosen: dict[int, tuple[Direction, Placement]] = {}
+    keys: set[int] = set()
+    for placement, direction, key in candidates:
+        if len(chosen) >= count:
+            break
+        # No chains: a key that is itself locked makes the player clear two locks
+        # to open one box, which reads as a bug rather than as difficulty.
+        if key.order_index in chosen or placement.order_index in keys:
+            continue
+        chosen[placement.order_index] = (direction, key)
+        keys.add(key.order_index)
+    return chosen
+
+
+def arrow_order_holds(
+    arrows: dict[int, tuple[Direction, Placement]],
+    position: dict[int, int],
+) -> bool:
+    """Is every locked box still opened after the box its arrow points at?"""
+    return all(
+        position[key.order_index] < position[order_index]
+        for order_index, (_, key) in arrows.items()
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Assembly
 # --------------------------------------------------------------------------- #
 def _is_active(slot_y: int, policy: str, hidden: bool) -> bool:
@@ -808,7 +1108,19 @@ def _is_active(slot_y: int, policy: str, hidden: bool) -> bool:
     return slot_y == 0
 
 
-def _box(spec: BoxSpec, grid_x: int, grid_y: int, is_active: bool, hidden: bool) -> BoxCellData:
+def _box(
+    spec: BoxSpec,
+    grid_x: int,
+    grid_y: int,
+    is_active: bool,
+    hidden: bool,
+    arrow: Direction | None = None,
+) -> BoxCellData:
+    effects: list[CellEffectData] = []
+    if hidden:
+        effects.append(HiddenCellEffectData())
+    if arrow is not None:
+        effects.append(ArrowLockCellEffectData(required_direction=arrow))
     return BoxCellData(
         grid_x=grid_x,
         grid_y=grid_y,
@@ -816,7 +1128,7 @@ def _box(spec: BoxSpec, grid_x: int, grid_y: int, is_active: bool, hidden: bool)
         direction=Direction.Up,
         color=ItemColor(spec.color),
         is_active=is_active,
-        effects=[HiddenCellEffectData()] if hidden else None,
+        effects=effects or None,
     )
 
 
@@ -832,6 +1144,12 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         raise AutoGenError(f"Tunnel dig window must be at least 1, got {options.dig_window}.")
     if options.walls is not None and options.walls < 0:
         raise AutoGenError(f"Wall count cannot be negative, got {options.walls}.")
+    if options.linked_mode not in LINKED_MODES:
+        raise AutoGenError(f"Unsupported linked container mode {options.linked_mode!r}.")
+    if options.linked_pairs is not None and options.linked_pairs < 0:
+        raise AutoGenError(f"Linked pair count cannot be negative, got {options.linked_pairs}.")
+    if options.arrow_ratio is not None and not 0.0 <= options.arrow_ratio <= 1.0:
+        raise AutoGenError(f"Arrow lock ratio must be between 0 and 1, got {options.arrow_ratio}.")
 
     profile = DIFFICULTY_PROFILES[options.difficulty]
     working = level.clone()
@@ -887,18 +1205,51 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         raise AutoGenError(f"Hidden ratio must be between 0 and 1, got {ratio}.")
     hidden = choose_hidden(placements, ratio, rng)
 
+    # Links come before locks: a linked pair may not carry an ArrowLock, and the
+    # links move boxes forward in the pick order, which is exactly what the locks
+    # have to be checked against.
+    linked_mode = profile.linked_mode if options.linked_mode == "auto" else options.linked_mode
+    link_count = plan_link_count(len(placements), options, profile)
+    linked, play_groups = plan_links(
+        board,
+        solution.order,
+        release.sequence,
+        placements,
+        hidden,
+        link_count,
+        linked_mode,
+        rules,
+        rng,
+    )
+    linked_indices = {
+        placement.order_index for left, right, _ in linked for placement in (left, right)
+    }
+    play_position = {
+        index: step for step, group in enumerate(play_groups) for index in group
+    }
+
+    arrow_count = plan_arrow_count(len(placements), options, profile)
+    arrows = plan_arrow_locks(
+        placements, play_position, hidden | linked_indices, arrow_count, rng
+    )
+
+    placement_by_index = {placement.order_index: placement for placement in placements}
     cells: list[BoxCellData] = []
+    cell_by_order_index: dict[int, BoxCellData] = {}
     for placement in placements:
         is_hidden = placement.order_index in hidden
-        cells.append(
-            _box(
-                placement.spec,
-                placement.grid_x,
-                placement.grid_y,
-                _is_active(placement.slot_y, options.active_policy, is_hidden),
-                is_hidden,
-            )
+        arrow = arrows.get(placement.order_index)
+        cell = _box(
+            placement.spec,
+            placement.grid_x,
+            placement.grid_y,
+            # A locked box cannot be opened yet, so it never starts active either.
+            _is_active(placement.slot_y, options.active_policy, is_hidden or arrow is not None),
+            is_hidden,
+            arrow[0] if arrow else None,
         )
+        cells.append(cell)
+        cell_by_order_index[placement.order_index] = cell
 
     tunnel_boxes = 0
     used_tunnels = 0
@@ -928,7 +1279,15 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
     working.grid_cols = cols * SLOT
     working.grid_rows = rows * SLOT
     working.grid_cells = cells
-    working.obstacles = []
+    working.obstacles = [
+        LinkedContainerObstacleData(
+            target_uids=[
+                cell_by_order_index[left.order_index].internal_uid,
+                cell_by_order_index[right.order_index].internal_uid,
+            ]
+        )
+        for left, right, _ in linked
+    ]
     working.piece = tray_slots
     working.difficulty = options.difficulty
     if options.apply_theme and options.difficulty in DIFFICULTY_FORCED_THEME:
@@ -949,6 +1308,16 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
     if not simulate_order(board, play_order, rules):
         raise AutoGenError(
             f"Internal error: the tunnel queues force a pick order that loses with piece={tray_slots}."
+        )
+    play_specs = [[solution.order[index] for index in group] for group in play_groups]
+    if not simulate_groups(board, play_specs, rules):
+        raise AutoGenError(
+            f"Internal error: the linked containers force a pick order that loses with "
+            f"piece={tray_slots}."
+        )
+    if not arrow_order_holds(arrows, play_position):
+        raise AutoGenError(
+            "Internal error: an ArrowLock box is opened before the box its arrow points at."
         )
     metrics = measure_difficulty(board, solution, rules)
 
@@ -1016,6 +1385,54 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
             "các box bên cạnh và không bao giờ mở ra, nên nó vừa ăn một slot vừa làm level khó "
             "hơn hẳn — đặt walls=0 nếu thấy quá tay."
         )
+    if options.use_linked_container and not linked:
+        warnings.append(
+            f"Không nối được cặp LinkedContainer nào ở chế độ {linked_mode!r}: cần hai box nằm sát "
+            "nhau, cùng trạng thái ẩn, và khoảng cách trong thứ tự giải phải phù hợp — mà thả hai "
+            f"box cùng lúc vẫn không được vượt piece={tray_slots}."
+        )
+    elif linked:
+        gaps = sorted((gap for _, _, gap in linked), reverse=True)
+        feel = (
+            "cả hai box đều là màu bên dưới đang cần nên khay rút cạn ngay, link gần như miễn phí"
+            if linked_mode == "sync"
+            else "box đi kèm là màu bên dưới chưa cần, nên nó ngồi chiếm ô khay và làm băng chuyền "
+            "đầy lên — đây chính là mức khó của link"
+        )
+        warnings.append(
+            f"{len(linked)} cặp LinkedContainer ({len(linked) * 2}/{len(placements)} box mặt ngoài) "
+            f"ở chế độ {linked_mode}: {feel}. Chênh lệch thứ tự lấy của từng cặp: "
+            + "/".join(str(gap) for gap in gaps)
+            + " lượt."
+        )
+    if link_count and len(linked) < link_count:
+        warnings.append(
+            f"Chỉ nối được {len(linked)}/{link_count} cặp LinkedContainer: những cặp còn lại làm "
+            f"tràn khay piece={tray_slots} nên đã bị bỏ. Muốn nhiều link hơn thì nâng piece hoặc "
+            "chuyển sang chế độ sync."
+        )
+    if options.use_arrow_lock and not arrows:
+        warnings.append(
+            "Không đặt được ArrowLock nào: mỗi box khoá cần một box thật nằm sát nó theo hướng mũi "
+            "tên, và box đó phải được mở trước trong thứ tự giải. Lưới quá nhỏ, quá nhiều wall, "
+            "hoặc box ẩn/box đã bị link đã chiếm hết các ứng viên."
+        )
+    elif arrows:
+        longest_wait = max(
+            play_position[order_index] - play_position[key.order_index]
+            for order_index, (_, key) in arrows.items()
+        )
+        warnings.append(
+            f"{len(arrows)}/{len(placements)} box mặt ngoài mang ArrowLock. Mũi tên luôn chỉ vào một "
+            "box thật nằm sát bên và box đó chắc chắn được mở trước, nên khoá luôn có chìa — không "
+            "bao giờ chỉ vào wall, vào tunnel hay ra ngoài lưới. Khoá mở muộn nhất sau "
+            f"{longest_wait} lượt lấy box."
+        )
+    if arrow_count and len(arrows) < arrow_count:
+        warnings.append(
+            f"Chỉ khoá được {len(arrows)}/{arrow_count} box bằng ArrowLock: các box còn lại không có "
+            "box nào sát bên được mở trước để làm chìa."
+        )
     if tray_slots > target_tray:
         warnings.append(
             f"piece đã được nâng từ {target_tray} lên {tray_slots}: bức ảnh này có những đoạn không "
@@ -1043,6 +1460,27 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         hidden_boxes=len(hidden),
         hidden_by_slot_row=hidden_by_slot_row,
         hidden_by_color=hidden_by_color,
+        arrow_locks=sorted(
+            (
+                (
+                    (placement_by_index[order_index].slot_x, placement_by_index[order_index].slot_y),
+                    direction,
+                    (key.slot_x, key.slot_y),
+                    play_position[order_index] - play_position[key.order_index],
+                )
+                for order_index, (direction, key) in arrows.items()
+            ),
+            key=lambda item: (item[0][1], item[0][0]),
+        ),
+        linked_pairs=sorted(
+            (
+                ((left.slot_x, left.slot_y), (right.slot_x, right.slot_y), gap)
+                for left, right, gap in linked
+            ),
+            key=lambda item: (item[0][1], item[0][0]),
+        ),
+        linked_mode=linked_mode,
+        play_groups=play_groups,
         removed_pixels=removed,
         emptied_columns=emptied,
         dropped_obstacles=dropped_obstacles,
@@ -1095,6 +1533,34 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
                 f"  tunnel {position} từ đầu hàng: "
                 + " > ".join(COLOR_NAMES[ItemColor(order[index].color)] for index in queue)
             )
+    if result.linked_pairs:
+        mode = (
+            "sync — cả hai màu đều đang cần bên dưới, khay rút cạn ngay"
+            if result.linked_mode == "sync"
+            else "stall — box đi kèm là màu chưa cần, nó chiếm ô khay và làm băng chuyền đầy lên"
+        )
+        lines += [
+            "",
+            f"LinkedContainer: {result.link_count} cặp ({result.link_count * 2} box), chế độ {mode}",
+            f"  chênh lệch thứ tự lấy lớn nhất: {result.max_link_gap} lượt",
+            "  các cặp slot (x, y): "
+            + ", ".join(
+                f"({left[0]}, {left[1]})-({right[0]}, {right[1]}) cách {gap}"
+                for left, right, gap in result.linked_pairs
+            ),
+        ]
+    if result.arrow_locks:
+        lines += [
+            "",
+            f"ArrowLock: {result.arrow_count} box bị khoá"
+            f" (mục tiêu {profile.arrow_ratio:.0%} box mặt ngoài)",
+            f"  khoá mở muộn nhất sau {result.max_arrow_wait} lượt lấy box",
+            "  slot (x, y) → hướng → slot chìa: "
+            + ", ".join(
+                f"({slot[0]}, {slot[1]}) → {direction.name} → ({key[0]}, {key[1]}) sau {wait} lượt"
+                for slot, direction, key, wait in result.arrow_locks
+            ),
+        ]
     if result.wall_slots:
         lines += [
             "",

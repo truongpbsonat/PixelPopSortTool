@@ -72,7 +72,7 @@ fields and can discover TrioBox and PopMachine data even though those cells are 
 powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ```
 
-Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth, wall reachability), and GUI smoke
+Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth, wall reachability, arrow lock keys, linked container tray pressure), and GUI smoke
 startup.
 
 ## Build EXE
@@ -128,7 +128,7 @@ from the current Pixel Grid at a chosen difficulty, in one undoable step. The ou
 the hand-written level files: a solid rectangle of `Square_3x3` boxes on a 3-cell lattice, every box
 mono-color and `isActive: false`, `piece` at 5, and the difficulty carried by the `Hidden` effect. It also
 rewrites `difficulty` and the Hard / Super Hard `themeId`, and clears `obstacles` because they referenced
-the replaced boxes.
+the replaced boxes — the only obstacles it writes back are the `LinkedContainer`s it generates itself.
 
 ### Assumed runtime rules
 
@@ -143,6 +143,10 @@ The generator plays the level while it builds it, using this model of `GameMode.
 - A **tunnel** is the one exception: it is a queue, only its head can be taken, and taking the head
   reveals the next box. An emptied tunnel does not vanish — it keeps its slot as a wall. So a box
   buried in a tunnel forces the player to pull everything in front of it into the tray first.
+- A **LinkedContainer** ties two boxes together: tapping either one sends **both** down, so the pick
+  costs two tray slots at the same instant rather than one at a time.
+- An **ArrowLock** box cannot be opened until a box in the direction its arrow points at has been
+  opened. That is a pure ordering constraint — it never changes what lands in the tray.
 - Two arbitrary choices make it deterministic: a ball fills the left-most matching column, and the
   oldest tray box drains first.
 
@@ -168,9 +172,14 @@ If the Unity runtime differs, `services/pixel_gameplay.py` is the only file to c
    [Tunnels](#tunnels)).
 5. **Hide** — a difficulty-driven share of boxes gets `Hidden`, spent on the rarest colors first and
    never on the front row.
-6. **Certify** — the level is replayed **twice** — in walkthrough order and in the order the tunnel
-   queues actually force — its histograms are checked against the pixel grid, and the report shows the
-   measured numbers.
+6. **Link** — if the level opted in, pairs of neighbouring boxes get a `LinkedContainer` (see
+   [Linked containers](#linked-containers)).
+7. **Lock** — if the level opted in, a share of the boxes gets `ArrowLock` (see
+   [Arrow locks](#arrow-locks)).
+8. **Certify** — the level is replayed **three times** — in walkthrough order, in the order the tunnel
+   queues force, and in the order the links force with both halves of a pair charged to the tray at
+   once — every arrow lock is checked to open after its key, its histograms are checked against the
+   pixel grid, and the report shows the measured numbers.
 
 ### Difficulty
 
@@ -183,6 +192,16 @@ color, so the player cannot tell whether picking it wastes a tray slot.
 | Medium | 15% | walkthrough order | 1 x 4 boxes | 1 box in the way | 0 |
 | Hard | 40% | next box within 4 boxes of the front row | 2 x 4 boxes | 2 boxes in the way | 2 — one pinched box |
 | SuperHard | 60% | next box anywhere on the grid | 2 x 5 boxes | 3 boxes in the way | 4 — two pinched boxes |
+
+`ArrowLock` and `LinkedContainer` are **per-level opt-ins**, not difficulty side effects: they only appear
+when the dialog's own tick box asks for them. Once ticked, the difficulty sets the dose:
+
+| Difficulty | ArrowLock boxes | Linked pairs | Link pairing |
+| --- | --- | --- | --- |
+| Easy | 8% | 2 | sync — both colors are wanted at once |
+| Medium | 15% | 3 | sync |
+| Hard | 25% | 3 | stall — the partner is not wanted for a while |
+| SuperHard | 33% | 4 | stall |
 
 `Hidden` is spent where it actually removes information: **on the rarest colors first**. Hiding one of a
 dozen identical boxes hides nothing, because the player just uses a visible one of the same color instead;
@@ -268,6 +287,55 @@ it is returned. The report lists the wall slots and which boxes ended up pinched
 Reserving walls **grows the lattice**, because the boxes still need their own slots: level 10's 30 boxes fit
 a 5x6 exactly, but at Hard the 2 reserved walls make it a 4x8. Set walls to `0` to get the tight rectangle
 back.
+
+### Arrow locks
+
+An `ArrowLock` box shows an arrow and **cannot be opened until a box in that direction has been opened**.
+Tick **Có ArrowLock trong level này** to put them in the level; the difficulty then decides how many.
+
+Two rules decide where an arrow can go, and both come straight from what the mechanic does:
+
+- The arrow points at a **real box on the neighbouring slot** — never at a wall, never at a tunnel, never
+  off the edge of the grid. A lock with nothing openable in its direction has no key and the box is dead for
+  the rest of the level. (The validator rejects it too, but the generator never gets that far.)
+- That key box is opened **earlier than the locked one in the certified walkthrough**. Otherwise the order
+  the solver proved wins would be illegal, and the level would need a solution nobody has checked.
+
+Per box, the direction chosen is the one whose key is opened **as late as still allowed**, so the lock stays
+shut for as long as it can instead of pointing at something cleared in the first few taps. The report gives
+each locked slot, its direction, the slot of its key, and how many picks later than the key it opens.
+
+Arrow is a hard mechanic even in small doses, so it is rationed: the share is capped at **one locked box per
+three boxes**, so the grid can never end up with nothing tappable on it, and locks are **never chained** — a
+key that is itself locked would make the player clear two locks to open one box, which reads as a bug rather
+than as difficulty. `Hidden` boxes are skipped (a box showing neither its color nor an open state is
+unreadable) and so are linked boxes, because a `LinkedContainer` may not target an `ArrowLock` box.
+
+### Linked containers
+
+A `LinkedContainer` ties **two boxes that sit side by side** on the grid: tapping either one sends both down
+the conveyor, so one tap spends **two tray slots at the same instant**. Tick **Có LinkedContainer trong
+level này** to put them in the level.
+
+The difficulty of the mechanic is entirely in *which* two boxes get tied, which is what **Kiểu
+LinkedContainer** selects:
+
+- **sync** (Easy, Medium) — the two colors are wanted within a pick or two of each other, so the tray drains
+  both straight away and the link is close to a freebie.
+- **stall** (Hard, SuperHard) — a wanted box is deliberately tied to one the board will not want for a while.
+  The partner arrives with no column to pour into, squats in a tray slot, and the conveyor runs full. Use it
+  carefully: this is the knob that makes a level feel cramped.
+
+Fairness is enforced by replay rather than by construction. Each candidate pair is tried against a **full
+run with both halves charged to the tray at once**, and kept only if the level still wins at the chosen
+`piece` — a group of two fails on a tray with one slot free even though the second box would have drained the
+moment the first emptied, because the game never gives the player that pause. Pairs that do not survive are
+dropped and the report says how many, so asking for four pairs on a tight picture yields the two it can
+actually carry instead of an unplayable level.
+
+Two more constraints come from the validator: the two halves must **look alike** (a hidden box is never tied
+to a visible one), and neither may carry an `ArrowLock`. Links are planned before locks for exactly that
+reason. The report lists each pair's slots and how far apart in the pick order the two halves sit.
 
 ### What the art has to look like
 
