@@ -27,7 +27,10 @@ Five stages:
    block is buried by difficulty: ``dig_window == 1`` releases every box exactly
    at the step it is needed, a wider window reverses that many boxes so the
    wanted color sits at the *back* of the window and the player has to keep
-   pulling to reach it. The window is only as wide as the tray survives.
+   pulling to reach it. The window is only as wide as the tray survives. Each
+   tunnel's ``direction`` is the side it hands its queue out on, so it is aimed
+   at a neighbouring slot that really holds a box - never at a wall, another
+   tunnel or off the edge of the lattice, all of which would seal the mouth.
 5. **Hide** - a difficulty-driven share of the boxes gets the ``Hidden`` effect,
    weighted towards the back rows and never on the front row, so the player can
    always see what is immediately available but not what is coming.
@@ -127,6 +130,22 @@ LINK_BOX_BUDGET = 4
 # the partner sits in the tray with no column to pour into.
 MAX_SYNC_GAP = 2
 MIN_STALL_GAP = 3
+
+# Mirrors LevelValidator._has_arrow_blocker_for_cell: the box grid's gridY grows
+# away from the front row, so Up is +1 and Down is -1. Both the ArrowLock arrows
+# and the tunnel mouths step through this.
+DIRECTION_STEPS: dict[Direction, tuple[int, int]] = {
+    Direction.Up: (0, 1),
+    Direction.Down: (0, -1),
+    Direction.Left: (-1, 0),
+    Direction.Right: (1, 0),
+}
+
+# Which way a tunnel would rather face when several sides are equally usable.
+# Down first: a tunnel is parked on a back row, so facing the front row aims it
+# at the part of the grid the player drains first, the way the hand-made levels
+# point their edge tunnels inwards.
+TUNNEL_FACING_ORDER = (Direction.Down, Direction.Left, Direction.Right, Direction.Up)
 
 
 class AutoGenError(ValueError):
@@ -237,6 +256,8 @@ class AutoGenResult:
     dig_windows: list[int] = field(default_factory=list)
     release: TunnelRelease = field(default_factory=TunnelRelease)
     tunnel_queues: list[list[int]] = field(default_factory=list)
+    # Per tunnel actually used: its slot and the direction its mouth faces.
+    tunnel_mouths: list[tuple[tuple[int, int], Direction]] = field(default_factory=list)
     wall_slots: list[tuple[int, int]] = field(default_factory=list)
     pinched_slots: list[tuple[int, int]] = field(default_factory=list)
     hidden_boxes: int = 0
@@ -661,6 +682,59 @@ def _wall_slots(
     return sorted(chosen, key=lambda slot: (slot[1], slot[0])), pinched
 
 
+# --------------------------------------------------------------------------- #
+# Stage 3c - which way each tunnel faces
+# --------------------------------------------------------------------------- #
+def tunnel_directions(
+    tunnel_slots: list[tuple[int, int]],
+    box_slots: list[tuple[int, int]],
+    wall_slots: list[tuple[int, int]],
+    cols: int,
+    rows: int,
+) -> list[Direction]:
+    """Point every tunnel's mouth at a slot that actually holds a box.
+
+    ``direction`` is where the tunnel hands its queue out, so the slot in front
+    of the mouth decides whether the queue is reachable at all:
+
+    * **Never off the lattice.** A tunnel on the border facing outwards - and a
+      corner tunnel has *two* such sides - releases its boxes into nothing.
+    * **Never a wall or another tunnel.** Both are permanent: a wall never opens
+      and an emptied tunnel stays on the grid as one, so a mouth aimed at either
+      is sealed for the whole level, not just for a while.
+    * **Always a real box.** A box is the one neighbour that clears, so facing
+      one is the only way the mouth is guaranteed to open up as the level is
+      played.
+
+    Ranking is by those tiers, so a usable side always beats a sealed one, and
+    within a tier by :data:`TUNNEL_FACING_ORDER` - front row first, then the
+    sides, and only then away from the player.
+
+    A tunnel with no box on any side keeps the best side it has (an in-lattice
+    neighbour over the outside) rather than raising: the layout has already been
+    certified as playable and a lattice that small has nowhere better to point.
+    """
+    boxes = set(box_slots)
+    blocked = set(wall_slots) | set(tunnel_slots)
+    facings: list[Direction] = []
+    for slot_x, slot_y in tunnel_slots:
+        ranked = []
+        for rank, direction in enumerate(TUNNEL_FACING_ORDER):
+            dx, dy = DIRECTION_STEPS[direction]
+            front = (slot_x + dx, slot_y + dy)
+            if not (0 <= front[0] < cols and 0 <= front[1] < rows):
+                tier = 3
+            elif front in blocked:
+                tier = 2
+            elif front in boxes:
+                tier = 0
+            else:  # inside the lattice, but nothing there to hand a box to
+                tier = 1
+            ranked.append((tier, rank, direction))
+        facings.append(min(ranked)[2])
+    return facings
+
+
 def tunnel_blocks(box_count: int, per_tunnel: list[int]) -> list[list[int]]:
     """Split the walkthrough into one contiguous block per tunnel, evenly spread.
 
@@ -704,6 +778,7 @@ def _layout(
     list[Placement],
     list[list[int]],
     list[tuple[int, int]],
+    list[Direction],
     list[tuple[int, int]],
     list[tuple[int, int]],
 ]:
@@ -745,7 +820,16 @@ def _layout(
         Placement(spec_by_index[order_index], order_index, slot_x, slot_y)
         for order_index, (slot_x, slot_y) in zip(surface, surface_slots)
     ]
-    return cols, rows, placements, blocks, tunnel_slots, wall_slots, pinched
+    # The mouths are aimed last, because they need the finished picture: which
+    # slots ended up as walls and which ones really carry a box.
+    facings = tunnel_directions(
+        tunnel_slots,
+        [(placement.slot_x, placement.slot_y) for placement in placements],
+        wall_slots,
+        cols,
+        rows,
+    )
+    return cols, rows, placements, blocks, tunnel_slots, facings, wall_slots, pinched
 
 
 # --------------------------------------------------------------------------- #
@@ -983,16 +1067,6 @@ def plan_links(
 # --------------------------------------------------------------------------- #
 # Stage 7 - lock boxes behind an arrow
 # --------------------------------------------------------------------------- #
-# Mirrors LevelValidator._has_arrow_blocker_for_cell: the box grid's gridY grows
-# away from the front row, so Up is +1 and Down is -1.
-DIRECTION_STEPS: dict[Direction, tuple[int, int]] = {
-    Direction.Up: (0, 1),
-    Direction.Down: (0, -1),
-    Direction.Left: (-1, 0),
-    Direction.Right: (1, 0),
-}
-
-
 def plan_arrow_count(surface_boxes: int, options: AutoGenOptions, profile: DifficultyProfile) -> int:
     """How many boxes to lock behind an arrow, before knowing which ones can take one."""
     if not options.use_arrow_lock:
@@ -1191,7 +1265,7 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
     solution.required_tray = minimum_tray(board, boxes, max_slots=tray_slots) or tray_slots
     seed = options.seed if options.seed is not None else working.level * 1000 + options.difficulty
     rng = random.Random(seed)
-    cols, rows, placements, blocks, tunnel_slots, wall_slots, pinched = _layout(
+    cols, rows, placements, blocks, tunnel_slots, facings, wall_slots, pinched = _layout(
         solution, options, rng
     )
 
@@ -1253,19 +1327,23 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
 
     tunnel_boxes = 0
     used_tunnels = 0
+    tunnel_mouths: list[tuple[tuple[int, int], Direction]] = []
     # strict: a queue without a slot would silently swallow its boxes.
-    for (slot_x, slot_y), queue in zip(tunnel_slots, queues, strict=True):
+    for (slot_x, slot_y), queue, facing in zip(tunnel_slots, queues, facings, strict=True):
         if not queue:
             continue
         used_tunnels += 1
         tunnel_boxes += len(queue)
+        tunnel_mouths.append(((slot_x, slot_y), facing))
         grid_x, grid_y = slot_x * SLOT, slot_y * SLOT
         cells.append(
             TunnelCellData(
                 grid_x=grid_x,
                 grid_y=grid_y,
                 shape=CellShape.Square_3x3,
-                direction=Direction.Up,
+                # Where the queue is handed out: always at a real box, never at a
+                # wall, another tunnel or off the grid.
+                direction=facing,
                 # The tunnel shows the color of its head, the only box on offer.
                 color=ItemColor(solution.order[queue[0]].color),
                 is_active=_is_active(slot_y, options.active_policy, False),
@@ -1365,6 +1443,24 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
             f"{tunnel_boxes}/{expected_boxes} box được cất trong {used_tunnels} tunnel; "
             f"{buried}. Tunnel hết box vẫn nằm lại trên lưới như một bức tường."
         )
+        box_slots = {(placement.slot_x, placement.slot_y) for placement in placements}
+        stuck = [
+            (slot, facing)
+            for slot, facing in tunnel_mouths
+            if (
+                slot[0] + DIRECTION_STEPS[facing][0],
+                slot[1] + DIRECTION_STEPS[facing][1],
+            )
+            not in box_slots
+        ]
+        if stuck:
+            warnings.append(
+                "Không tìm được hướng nhả box hợp lệ cho tunnel "
+                + ", ".join(f"({x}, {y}) → {facing.name}" for (x, y), facing in stuck)
+                + ": mọi cạnh của nó đều là wall, tunnel khác hoặc ra ngoài lưới. Lưới quá nhỏ "
+                "hoặc quá nhiều wall — hạ walls hoặc nâng giới hạn slot để miệng tunnel chỉ vào "
+                "một box thật."
+            )
     if blocks and any(window < wanted_window for window in dig_windows):
         warnings.append(
             f"Độ chôn của tunnel bị thu hẹp từ {wanted_window} xuống "
@@ -1455,6 +1551,7 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         dig_windows=dig_windows,
         release=release,
         tunnel_queues=queues,
+        tunnel_mouths=tunnel_mouths,
         wall_slots=wall_slots,
         pinched_slots=pinched,
         hidden_boxes=len(hidden),
@@ -1527,6 +1624,12 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
             f"  phải đào: tối đa {result.release.max_dig} box thừa trước khi tới box cần,"
             f" trung bình {result.release.mean_dig:.2f}",
         ]
+        lines.append(
+            "  hướng nhả box (slot → hướng): "
+            + ", ".join(
+                f"({x}, {y}) → {facing.name}" for (x, y), facing in result.tunnel_mouths
+            )
+        )
         order = result.solution.order
         for position, queue in enumerate(result.tunnel_queues):
             lines.append(

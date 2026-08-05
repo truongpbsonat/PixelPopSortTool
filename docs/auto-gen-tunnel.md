@@ -159,6 +159,40 @@ Tunnel bản thân đã che hết mọi thứ phía sau đầu hàng đợi rồ
 ngoài, và report tính % theo **số box mặt ngoài** (`surface_hidden_ratio`) — nếu chia cho tổng số
 box thì Hard hiện 30% trong khi target 40%, gây hiểu nhầm là bug.
 
+### `direction` của tunnel là **hướng nhả box**, luôn chỉ vào một box thật
+
+*(bổ sung 2026-08-05 — trước đó luôn là `Direction.Up`, xem mục 9.2 cũ)*
+
+`tunnel_directions(tunnel_slots, box_slots, wall_slots, cols, rows)` chọn hướng cho từng tunnel.
+Slot nằm **trước miệng tunnel** quyết định hàng đợi có lấy được hay không, nên xếp hạng theo 3 tier:
+
+| Tier | Slot phía trước | Lý do |
+| --- | --- | --- |
+| 0 ✅ | có **box thật** | box sẽ được lấy đi ⇒ miệng tunnel chắc chắn thông ra |
+| 1 | trong lưới nhưng trống | ít nhất còn hướng vào trong lưới |
+| 2 ❌ | **wall** hoặc **tunnel khác** | cả hai đều vĩnh viễn ⇒ miệng bị bịt suốt màn |
+| 3 ❌ | **ra ngoài lưới** (góc lưới có **2** cạnh như vậy) | nhả box vào chỗ không có gì |
+
+Cùng tier thì theo `TUNNEL_FACING_ORDER = (Down, Left, Right, Up)` — `Down` trước vì tunnel nằm ở
+hàng sau, quay về **hàng trước** là quay về phần lưới người chơi rút cạn đầu tiên (giống level
+hand-made: tunnel ở biên đều nhìn vào trong).
+
+Lưu ý `DIRECTION_STEPS`: `gridY` tăng theo chiều **xa hàng trước**, nên `Up = +1`, `Down = -1`.
+Dict này đã được chuyển lên khối constant đầu file vì giờ cả ArrowLock và tunnel đều dùng.
+
+Hướng được tính **cuối cùng trong `_layout`**, sau khi đã biết slot nào là wall và slot nào thật sự
+có box — tính sớm hơn thì chưa đủ dữ liệu.
+
+Không có hướng nào đạt tier 0 (lưới quá nhỏ / quá nhiều wall) thì **không raise**: layout đã được
+`layout_is_open` chứng minh là chơi được rồi, nên chỉ giữ hướng tốt nhất còn lại và ghi **warning**
+`"Không tìm được hướng nhả box hợp lệ cho tunnel ..."`.
+
+`AutoGenResult.tunnel_mouths: list[(slot, Direction)]` (chỉ các tunnel thật sự có box) và report có
+dòng `hướng nhả box (slot → hướng)`.
+
+Đo thực tế trên level 10 (`tunnel_mode="mechanic"`): Easy/Medium/Hard đều `Down`; SuperHard thì
+tunnel `(0, 6)` chuyển sang `Right` vì `(0, 5)` là wall — đúng ý đồ.
+
 ### Tunnel hiện màu của **box đầu hàng đợi**
 
 Là box duy nhất nó đang chào. Khớp với level 20 (tunnel White, storedCell đầu là White).
@@ -205,10 +239,10 @@ Trong `tests/test_box_autogen.py`, mục `# Tunnels`:
    `AutoGenOptions.tunnel_mode` hoặc cho `_DIFFICULTY` quyết định — **1 dòng**, nhưng sẽ phải sửa
    `test_regenerating_level_10_reproduces_its_structure` (đang assert `tunnel_count == 0`).
 
-2. **`direction` của tunnel sinh ra luôn là `Up`.** Level hand-made đặt ở biên và dùng `Right` (x=0)
-   / `Left` (x=15) — nhìn vào trong. `Square_3x3` đối xứng nên **không ảnh hưởng hình học**, nhưng
-   nếu Unity runtime dùng `direction` để quyết định hướng nhả box thì cần set theo biên. **Cần hỏi
-   lại designer.**
+2. ~~**`direction` của tunnel sinh ra luôn là `Up`.**~~ **Đã làm 2026-08-05**: `direction` giờ là
+   hướng nhả box, luôn chỉ vào slot có box thật, không bao giờ vào wall / tunnel khác / ra ngoài
+   lưới. Xem mục 6. Còn mở: nếu runtime nhả box **ra đúng ô đó** (chứ chỉ là hướng gợi ý) thì cần
+   thêm rule "ô đó phải trống ở thời điểm nhả" — hiện chỉ đảm bảo ô đó là box sẽ được lấy đi.
 
 3. **Hard trên level 10 có tunnel thứ 2 bị kẹt ở window 1** vì `piece=5` chật ở đoạn đó. Muốn đào
    sâu hơn thì nâng `piece` hoặc rút ngắn tunnel. Report đã ghi rõ warning này.

@@ -37,6 +37,7 @@ from pixel_level_tool.services.box_autogen import (
     plan_walls,
     reachable_slots,
     tunnel_blocks,
+    tunnel_directions,
 )
 from pixel_level_tool.services.level_serializer import dumps_level, level_from_dict, level_to_dict
 from pixel_level_tool.services.level_validator import LevelValidator
@@ -194,7 +195,10 @@ def test_every_box_is_a_square_on_the_three_cell_lattice(difficulty):
     result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=difficulty))
     for cell in result.level.grid_cells:
         assert cell.shape == CellShape.Square_3x3
-        assert cell.direction == Direction.Up
+        # Square_3x3 is symmetric, so a plain box has no reason to turn; only a
+        # tunnel's direction means something, and that is its release side.
+        if not isinstance(cell, TunnelCellData):
+            assert cell.direction == Direction.Up
         assert cell.grid_x % SLOT == 0 and cell.grid_y % SLOT == 0
         assert cell.grid_x < result.level.grid_cols and cell.grid_y < result.level.grid_rows
     assert result.level.grid_cols == result.slot_cols * SLOT
@@ -381,6 +385,51 @@ def test_tunnels_sit_on_the_back_row_edges_and_never_overlap_a_box():
     assert len(occupied) == len(set(occupied)), "an emptied tunnel keeps its slot to itself"
 
 
+def test_a_tunnel_mouth_faces_a_box_never_a_wall_a_tunnel_or_the_outside():
+    """``direction`` is the release side, so it has to point at something that clears."""
+    boxes = [(1, 0), (0, 1)]
+    tunnels = [(0, 0), (2, 2)]
+    walls = [(1, 1), (2, 1), (0, 2), (1, 2)]
+    facings = tunnel_directions(tunnels, boxes, walls, 3, 3)
+    # (0, 0) is a corner: Down and Left leave the lattice, so the mouth turns to
+    # one of the two boxes beside it - Right, the earlier of them.
+    assert facings[0] is Direction.Right
+    # (2, 2) has only walls and the outside around it, so no side is usable; it
+    # still keeps one that stays inside the lattice instead of facing outwards.
+    assert facings[1] is Direction.Down
+
+
+def test_a_tunnel_mouth_prefers_the_front_row_when_several_sides_hold_a_box():
+    boxes = [(1, 1), (0, 2), (2, 2)]
+    facings = tunnel_directions([(1, 2)], boxes, [], 3, 3)
+    assert facings == [Direction.Down]
+
+
+@pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
+def test_generated_tunnels_release_into_a_real_box(difficulty):
+    options = AutoGenOptions(difficulty=difficulty, tunnel_mode="mechanic")
+    result = auto_generate_boxes(level_10(), options)
+    box_slots = {
+        (cell.grid_x // SLOT, cell.grid_y // SLOT)
+        for cell in result.level.grid_cells
+        if not isinstance(cell, TunnelCellData)
+    }
+    assert result.tunnel_mouths
+    for tunnel, (slot, facing) in zip(tunnels_of(result.level), result.tunnel_mouths):
+        assert tunnel.direction is facing
+        assert (tunnel.grid_x // SLOT, tunnel.grid_y // SLOT) == slot
+        step = {
+            Direction.Up: (0, 1),
+            Direction.Down: (0, -1),
+            Direction.Left: (-1, 0),
+            Direction.Right: (1, 0),
+        }[facing]
+        front = (slot[0] + step[0], slot[1] + step[1])
+        assert 0 <= front[0] < result.slot_cols and 0 <= front[1] < result.slot_rows
+        assert front in box_slots
+    assert not any("hướng nhả box hợp lệ" in warning for warning in result.warnings)
+
+
 def test_digging_is_narrowed_until_the_tray_survives_it():
     """Burying costs tray slots, so a tight piece has to flatten the queue."""
     options = AutoGenOptions(
@@ -464,7 +513,13 @@ def test_tunnels_stay_winnable_on_arbitrary_pictures(difficulty, seed):
 def test_the_report_explains_the_tunnel_queues():
     options = AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), tunnel_mode="mechanic")
     report = format_report(auto_generate_boxes(level_10(), options), options)
-    for fragment in ("Tunnel:", "độ chôn", "phải đào:", "tunnel 0 từ đầu hàng:"):
+    for fragment in (
+        "Tunnel:",
+        "độ chôn",
+        "phải đào:",
+        "hướng nhả box",
+        "tunnel 0 từ đầu hàng:",
+    ):
         assert fragment in report
 
 

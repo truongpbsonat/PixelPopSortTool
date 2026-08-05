@@ -259,6 +259,13 @@ color of its head, the only box it is currently offering. `Hidden` is never spen
 already conceals everything behind its head — so the report measures the hidden share against the surface
 boxes, the only ones that could carry it.
 
+A tunnel's `direction` is the side it **hands its queue out** on, so it is aimed at the neighbouring slot
+that really holds a box: never off the lattice (a corner tunnel has two such sides), and never at a wall or
+another tunnel, both of which are permanent and would seal the mouth for the whole level. When several sides
+qualify, the mouth turns towards the **front row** first — the part of the grid the player drains first, the
+way the hand-made levels point their edge tunnels inwards. The report lists each tunnel's slot and facing,
+and warns if a cramped or wall-heavy lattice left a mouth with no box on any side.
+
 ### Walls
 
 **Every lattice slot the boxes do not fill is a wall.** A wall blocks the way in to the boxes beside it and
