@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Auto Gen Box: the two opt-in obstacles, ArrowLock and LinkedContainer.
+"""Auto Gen Box: ArrowLock and LinkedContainer.
 
-Both mechanics are a per-level choice rather than a difficulty side effect, so the
-first thing checked here is that nothing appears unless it was asked for. After
-that the tests split along the two ways each mechanic can be got wrong:
+Both mechanics are read off the level the way Hidden and Wall are - the tier picks
+them if its obstacle budget reaches that far - so the first thing checked here is
+that a level can still switch each one off by hand. After that the tests split
+along the two ways each mechanic can be got wrong:
 
 * an **ArrowLock** whose arrow points at a wall, at a tunnel or off the grid can
   never be opened, and one whose key box is opened *after* it makes the certified
@@ -33,11 +34,14 @@ from pixel_level_tool.services.box_autogen import (
     SLOT,
     AutoGenError,
     AutoGenOptions,
+    ObstaclePlan,
     auto_generate_boxes,
+    belt_residues,
     format_report,
     plan_arrow_count,
     plan_link_count,
 )
+from pixel_level_tool.services.picture_scan import PictureScan
 from pixel_level_tool.services.level_serializer import dumps_level, level_from_dict, level_to_dict
 from pixel_level_tool.services.level_validator import LevelValidator
 from pixel_level_tool.services.mechanics_scanner import MechanicsScanner
@@ -55,7 +59,8 @@ from tests.test_box_autogen import (
     assert_valid,
     banded_level,
     level_10,
-    noisy_level,
+    tier_options,
+    varied_level,
     surface_boxes,
 )
 
@@ -63,12 +68,24 @@ from tests.test_box_autogen import (
 BOTH_OBSTACLES = {"use_arrow_lock": True, "use_linked_container": True}
 
 
+def links_of(level: PixelLevelData) -> list[LinkedContainerObstacleData]:
+    """Just the LinkedContainers.
+
+    A level's obstacle list also carries the LargeBlock slabs the lock stages lay,
+    and these tests are about the pairs.
+    """
+    return [
+        obstacle
+        for obstacle in level.obstacles
+        if isinstance(obstacle, LinkedContainerObstacleData)
+    ]
+
+
 def link_pairs(level: PixelLevelData) -> list[tuple]:
     """Every LinkedContainer as the pair of boxes it actually targets."""
     by_uid = {cell.internal_uid: cell for cell in level.grid_cells}
     pairs = []
-    for obstacle in level.obstacles:
-        assert isinstance(obstacle, LinkedContainerObstacleData)
+    for obstacle in links_of(level):
         assert len(set(obstacle.target_uids)) == 2
         pairs.append(tuple(by_uid[uid] for uid in obstacle.target_uids))
     return pairs
@@ -86,25 +103,62 @@ def arrow_direction(cell):
     )
 
 
-def test_neither_obstacle_appears_unless_it_is_asked_for():
-    """Both mechanics are a per-level choice, so the default has to be off."""
+# A plan that spends both mechanics and nothing else, for the count planners -
+# they are asked "how many", never "whether", and the plan is what answers that.
+BOTH = ObstaclePlan(kinds=("arrow", "linked"), budget=(0, 2))
+BANDS = PictureScan()
+
+
+def test_either_obstacle_can_be_switched_off_for_one_level():
+    """The tier picks these now, so a level says no by unticking, not by default."""
     for difficulty in ALL_DIFFICULTIES:
-        result = auto_generate_boxes(level_10(), AutoGenOptions(difficulty=difficulty))
-        assert result.level.obstacles == []
+        result = auto_generate_boxes(
+            level_10(),
+            AutoGenOptions(
+                difficulty=difficulty, use_arrow_lock=False, use_linked_container=False
+            ),
+        )
+        assert links_of(result.level) == []
         assert arrow_boxes(result.level) == []
         assert result.arrow_locks == [] and result.linked_pairs == []
+        assert not result.obstacle_plan.has("arrow")
+        assert not result.obstacle_plan.has("linked")
+
+
+def test_a_tier_that_can_afford_them_spends_them_without_being_asked():
+    """The point of the change: no tick box stands between a tier and its dose."""
+    for difficulty in ALL_DIFFICULTIES:
+        plan = auto_generate_boxes(
+            level_10(), AutoGenOptions(difficulty=difficulty)
+        ).obstacle_plan
+        assert plan.has("arrow"), f"difficulty {difficulty} skipped ArrowLock"
+        # Against the mechanic budget, not the whole plan: the locks are on their
+        # own budget and do not push a mechanic off the level.
+        assert len(plan.mechanics) <= plan.budget[1]
 
 
 # --------------------------------------------------------------------------- #
 # LinkedContainer
 # --------------------------------------------------------------------------- #
 def test_linked_containers_are_generated_and_validate():
+    """One pair per tier, on the whole 30 box surface.
+
+    Walls and tunnels are switched off so this stays a test of the link mechanic:
+    both eat surface slots, and a crowded lattice can leave a stall pair with no
+    legal partner for reasons that have nothing to do with linking.
+    """
     for difficulty in ALL_DIFFICULTIES:
         result = auto_generate_boxes(
-            level_10(), AutoGenOptions(difficulty=difficulty, use_linked_container=True)
+            level_10(),
+            AutoGenOptions(
+                difficulty=difficulty,
+                use_linked_container=True,
+                walls=0,
+                tunnel_mode="overflow",
+            ),
         )
         assert result.link_count, f"difficulty {difficulty} generated no link at all"
-        assert len(result.level.obstacles) == result.link_count
+        assert len(links_of(result.level)) == result.link_count
         assert_valid(result.level)
 
 
@@ -126,7 +180,7 @@ def test_no_box_belongs_to_two_linked_containers():
         level_10(),
         AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), use_linked_container=True),
     )
-    uids = [uid for obstacle in result.level.obstacles for uid in obstacle.target_uids]
+    uids = [uid for obstacle in links_of(result.level) for uid in obstacle.target_uids]
     assert len(uids) == len(set(uids))
 
 
@@ -194,16 +248,20 @@ def test_a_level_with_links_is_still_winnable_with_its_piece():
             level_10(), AutoGenOptions(difficulty=difficulty, use_linked_container=True)
         )
         board = BoardState.from_pixel_grid(result.level.pixel_grid)
-        assert simulate_groups(board, result.play_groups_specs, GameRules(result.level.piece))
+        assert simulate_groups(board, result.play_groups_specs, GameRules(result.belt_slots))
 
 
 def test_link_count_is_capped_by_the_number_of_boxes():
     profile = DIFFICULTY_PROFILES[int(LevelDifficulty.Hard)]
-    assert plan_link_count(
-        30, AutoGenOptions(use_linked_container=True, linked_pairs=99), profile
-    ) == 30 // LINK_BOX_BUDGET
-    assert plan_link_count(30, AutoGenOptions(linked_pairs=4), profile) == 0, "off unless asked"
-    assert plan_link_count(30, AutoGenOptions(use_linked_container=True, linked_pairs=0), profile) == 0
+    assert (
+        plan_link_count(30, AutoGenOptions(linked_pairs=99), profile, BANDS, BOTH)
+        == 30 // LINK_BOX_BUDGET
+    )
+    off = ObstaclePlan(kinds=("arrow",), budget=(0, 1))
+    assert plan_link_count(30, AutoGenOptions(linked_pairs=4), profile, BANDS, off) == 0, (
+        "a plan that did not buy links spends none"
+    )
+    assert plan_link_count(30, AutoGenOptions(linked_pairs=0), profile, BANDS, BOTH) == 0
 
 
 def test_a_negative_link_count_is_rejected():
@@ -220,7 +278,7 @@ def test_asking_for_links_a_picture_cannot_carry_only_warns():
     """Two boxes in a column leave no pair the tray survives, and that is not an error."""
     result = auto_generate_boxes(banded_level([0, 1]), AutoGenOptions(use_linked_container=True))
     assert result.link_count == 0
-    assert result.level.obstacles == []
+    assert links_of(result.level) == []
     assert any("LinkedContainer" in warning for warning in result.warnings)
     assert_valid(result.level)
 
@@ -241,12 +299,12 @@ def test_resolve_link_groups_rejects_a_box_linked_to_itself():
         resolve_link_groups([0, 1], [(1, 1)])
 
 
-def test_a_group_of_two_needs_two_free_tray_slots_at_once():
+def test_a_group_of_two_needs_two_boxes_of_belt_at_once():
     """The player never gets the pause where the first box drains before the second lands."""
     board = BoardState.from_pixel_grid(banded_level([0, 1]).pixel_grid)
-    assert simulate_order(board, [BoxSpec(0, 9), BoxSpec(1, 9)], GameRules(1))
-    assert not simulate_groups(board, [[BoxSpec(0, 9), BoxSpec(1, 9)]], GameRules(1))
-    assert simulate_groups(board, [[BoxSpec(0, 9), BoxSpec(1, 9)]], GameRules(2))
+    assert simulate_order(board, [BoxSpec(0, 9), BoxSpec(1, 9)], GameRules(9))
+    assert not simulate_groups(board, [[BoxSpec(0, 9), BoxSpec(1, 9)]], GameRules(9))
+    assert simulate_groups(board, [[BoxSpec(0, 9), BoxSpec(1, 9)]], GameRules(18))
 
 
 # --------------------------------------------------------------------------- #
@@ -342,7 +400,7 @@ def test_arrow_locks_stay_rarer_at_easy_than_at_super_hard():
     shares = []
     for difficulty in ALL_DIFFICULTIES:
         result = auto_generate_boxes(
-            level_10(), AutoGenOptions(difficulty=difficulty, use_arrow_lock=True)
+            level_10(), tier_options(difficulty=difficulty, use_arrow_lock=True)
         )
         shares.append(result.arrow_count / result.surface_boxes)
     assert shares[0] < shares[-1]
@@ -351,11 +409,57 @@ def test_arrow_locks_stay_rarer_at_easy_than_at_super_hard():
 
 def test_arrow_count_is_capped_by_the_number_of_boxes():
     profile = DIFFICULTY_PROFILES[int(LevelDifficulty.Hard)]
-    assert plan_arrow_count(
-        30, AutoGenOptions(use_arrow_lock=True, arrow_ratio=1.0), profile
-    ) == 30 // ARROW_BOX_BUDGET
-    assert plan_arrow_count(30, AutoGenOptions(arrow_ratio=1.0), profile) == 0, "off unless asked"
-    assert plan_arrow_count(30, AutoGenOptions(use_arrow_lock=True, arrow_ratio=0.0), profile) == 0
+    assert (
+        plan_arrow_count(30, AutoGenOptions(arrow_ratio=1.0), profile, BANDS, BOTH)
+        == 30 // ARROW_BOX_BUDGET
+    )
+    off = ObstaclePlan(kinds=("linked",), budget=(0, 1))
+    assert plan_arrow_count(30, AutoGenOptions(arrow_ratio=1.0), profile, BANDS, off) == 0, (
+        "a plan that did not buy arrows spends none"
+    )
+    assert plan_arrow_count(30, AutoGenOptions(arrow_ratio=0.0), profile, BANDS, BOTH) == 0
+
+
+def test_the_arrow_dose_thins_out_on_a_fragmented_picture():
+    """A lock costs an alternative pick, and a fragmented picture barely has any."""
+    profile = DIFFICULTY_PROFILES[int(LevelDifficulty.Hard)]
+    options = AutoGenOptions(arrow_ratio=0.30)
+    bands = plan_arrow_count(30, options, profile, PictureScan(), BOTH)
+
+    noisy = PictureScan(painted=30, histogram={1: 15, 2: 15}, runs=[(1, 1)] * 30)
+    assert noisy.fragmentation > 0.9
+    assert plan_arrow_count(30, options, profile, noisy, BOTH) < bands
+    assert plan_arrow_count(30, options, profile, noisy, BOTH) >= 1, (
+        "reading the picture thins the dose, it does not cancel the mechanic"
+    )
+
+
+def test_an_exact_arrow_count_beats_the_share_but_keeps_the_safety_cap():
+    profile = DIFFICULTY_PROFILES[int(LevelDifficulty.Hard)]
+    asked = AutoGenOptions(arrow_boxes=4, arrow_ratio=1.0)
+    off = ObstaclePlan(kinds=("linked",), budget=(0, 1))
+
+    assert plan_arrow_count(30, asked, profile, BANDS, BOTH) == 4
+    assert plan_arrow_count(30, AutoGenOptions(arrow_boxes=0), profile, BANDS, BOTH) == 0
+    assert plan_arrow_count(30, AutoGenOptions(arrow_boxes=9), profile, BANDS, off) == 0, (
+        "a plan that did not buy arrows spends none"
+    )
+    assert (
+        plan_arrow_count(30, AutoGenOptions(arrow_boxes=99), profile, BANDS, BOTH)
+        == 30 // ARROW_BOX_BUDGET
+    ), "one locked box per three still holds: the grid must keep something tappable"
+
+
+def test_asking_for_an_exact_number_of_arrow_boxes_gets_it():
+    result = auto_generate_boxes(
+        level_10(),
+        AutoGenOptions(
+            difficulty=int(LevelDifficulty.Easy), use_arrow_lock=True, arrow_boxes=5
+        ),
+    )
+
+    assert result.arrow_count == 5
+    assert_valid(result.level)
 
 
 def test_an_out_of_range_arrow_ratio_is_rejected():
@@ -382,7 +486,7 @@ def test_both_obstacles_survive_a_round_trip_through_json():
     level.assign_deterministic_ids()
     restored = level_from_dict(level_to_dict(level))
 
-    assert len(restored.obstacles) == result.link_count
+    assert len(links_of(restored)) == result.link_count
     assert len(arrow_boxes(restored)) == result.arrow_count
     assert {frozenset((left.id, right.id)) for left, right in link_pairs(level)} == {
         frozenset((left.id, right.id)) for left, right in link_pairs(restored)
@@ -409,11 +513,72 @@ def test_the_report_explains_both_obstacles():
 
 def test_both_obstacles_hold_up_on_noisy_pictures():
     for seed in range(4):
-        level = noisy_level(9, 9, 4, seed)
+        level = varied_level(9, 9, 4, seed)
         for difficulty in ALL_DIFFICULTIES:
             result = auto_generate_boxes(
                 level.clone(), AutoGenOptions(difficulty=difficulty, **BOTH_OBSTACLES)
             )
             assert_valid(result.level)
             board = BoardState.from_pixel_grid(result.level.pixel_grid)
-            assert simulate_groups(board, result.play_groups_specs, GameRules(result.level.piece))
+            assert simulate_groups(board, result.play_groups_specs, GameRules(result.belt_slots))
+
+
+# --------------------------------------------------------------------------- #
+# The easy form of each mechanic
+#
+# An easy tier does not drop the obstacles, it spends the *easy version* of them:
+# the same LinkedContainer that stalls the conveyor at Hard has to clear straight
+# through at Easy, and the same ArrowLock that keeps a box shut for half the level
+# has to be open by the time the player walks past it.
+# --------------------------------------------------------------------------- #
+def test_easy_points_every_arrow_at_the_box_opened_just_before_it():
+    """At Easy the arrows read as a route, not as a puzzle: each key is the last pick."""
+    result = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Easy), use_arrow_lock=True)
+    )
+    assert result.arrow_locks, "Easy still spends arrows, just the near form"
+    assert result.max_arrow_wait <= 2, "an easy key is opened within a pick or two"
+
+
+def test_hard_reaches_as_far_back_as_the_order_allows_for_its_keys():
+    easy = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Easy), use_arrow_lock=True)
+    )
+    hard = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Hard), use_arrow_lock=True)
+    )
+    assert hard.max_arrow_wait > easy.max_arrow_wait
+
+
+def test_an_easy_linked_pair_clears_without_leaving_a_ball_behind():
+    """The rule for an easy link: tap it and the conveyor is empty again.
+
+    Both halves drain straight onto the picture, so the pair costs the player
+    nothing beyond the tap. A Hard link is allowed to squat, which is the whole
+    point of "stall" - that half is covered by the mode tests above.
+    """
+    result = auto_generate_boxes(
+        level_10(), AutoGenOptions(difficulty=int(LevelDifficulty.Easy), use_linked_container=True)
+    )
+    assert result.linked_pairs, "Easy still ties pairs, just the clean ones"
+    board = BoardState.from_pixel_grid(result.level.pixel_grid)
+    residues = belt_residues(board, result.play_groups_specs, GameRules(result.belt_slots))
+    assert residues is not None, "the linked play order must still win"
+
+    linked = {index for group in result.play_groups if len(group) > 1 for index in group}
+    assert linked, "at least one pick drops two boxes at once"
+    for step, group in enumerate(result.play_groups):
+        if len(group) > 1:
+            assert residues[step] == 0, "an easy link leaves nothing on the conveyor"
+
+
+def test_every_tier_still_wins_with_both_obstacles_on_its_own_form():
+    for difficulty in ALL_DIFFICULTIES:
+        result = auto_generate_boxes(
+            level_10(), AutoGenOptions(difficulty=difficulty, **BOTH_OBSTACLES)
+        )
+        board = BoardState.from_pixel_grid(result.level.pixel_grid)
+        residues = belt_residues(board, result.play_groups_specs, GameRules(result.belt_slots))
+        assert residues is not None, f"{difficulty} does not win"
+        assert max(residues) <= result.belt_slots
+        assert_valid(result.level)

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 The runtime rules assumed here are the ones the level designer confirmed:
 
-* The pixel grid is consumed **from the top row downwards**, independently per
-  column.  The *frontier* of a column is its topmost unfilled pixel, the exact
-  value :meth:`PixelGridData.frontier_rows` already draws in the pixel editor.
-* A picked box takes one of ``piece`` tray slots and keeps draining balls into
-  any column whose frontier matches its color until the box is empty.
-* The player loses when every tray slot holds a box that cannot drain.
+* The pixel grid is consumed in **one fixed pass**: the top row first, and
+  inside a row from the **right edge leftwards**.  An empty cell is not a stop -
+  a ball skips it and lands on the next painted pixel - so the picture reduces
+  to the single color sequence :func:`picture_scan.play_sequence` returns, and
+  the *frontier* is one cell rather than one per column.
+* A picked box pours its nine balls onto the **conveyor**, which holds thirty.
+  Tapping needs room for a whole box, so a tap is legal only while nine slots
+  are free and three full boxes is the ceiling.
+* Balls leave the conveyor by paying for the frontier pixel, so a box whose
+  color is not wanted yet just sits there taking up room.
+* The player loses when no tap is legal and nothing on the conveyor can drain -
+  the conveyor is jammed with colors the picture is not asking for.
 * Every box on the grid can be picked, so the box grid layout decides how much
   searching the player has to do rather than what is reachable.
 * A **tunnel** is the one exception: it is a queue, only its head can be taken,
@@ -26,18 +32,20 @@ The runtime rules assumed here are the ones the level designer confirmed:
   changes what lands in the tray - so it is enforced on the pick order in
   :mod:`box_autogen` rather than modelled here.
 
-Two arbitrary choices make the simulation deterministic: a ball always fills the
-left-most matching column, and the oldest tray box drains first.
+One arbitrary choice makes the simulation deterministic: when several boxes on
+the conveyor carry the frontier color, the oldest one pays.
 """
 
+from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass, field
 
-from pixel_level_tool.domain.enums import EMPTY_COLOR_ID
 from pixel_level_tool.domain.level_models import PixelGridData
-
-
-BALLS_PER_BOX = 9
+from pixel_level_tool.services.picture_scan import (
+    BALLS_PER_BOX,
+    DEFAULT_BELT_SLOTS,
+    play_sequence,
+)
 
 
 @dataclass(frozen=True)
@@ -60,82 +68,125 @@ class TrayBox:
 
 @dataclass(frozen=True)
 class GameRules:
-    tray_slots: int = 5
+    """The conveyor, measured in balls rather than in boxes.
+
+    A tap pours a whole box on at once, so ``belt_slots`` divided by
+    ``box_size`` is the real ceiling and the remainder is dead room: thirty
+    slots take three nine-ball boxes and the last three slots can never be
+    filled by a fourth.
+    """
+
+    belt_slots: int = DEFAULT_BELT_SLOTS
+    box_size: int = BALLS_PER_BOX
+
+    @property
+    def max_boxes(self) -> int:
+        return self.belt_slots // self.box_size
+
+
+def belt_used(tray: list["TrayBox"]) -> int:
+    """Balls sitting on the conveyor right now."""
+    return sum(box.remaining for box in tray)
+
+
+def can_tap(tray: list["TrayBox"], rules: GameRules, boxes: int = 1) -> bool:
+    """Is there room to drop ``boxes`` more boxes on the conveyor?
+
+    The whole box lands at once, so partial room is no room at all - this is the
+    rule the player loses to, not a tray-slot count.
+    """
+    return rules.belt_slots - belt_used(tray) >= rules.box_size * boxes
 
 
 class GameplayError(ValueError):
     pass
 
 
+def _index_positions(sequence: tuple[int, ...]) -> dict[int, tuple[int, ...]]:
+    """Where each color appears, so ``next_gap`` is a lookup rather than a scan."""
+    positions: dict[int, list[int]] = {}
+    for index, color in enumerate(sequence):
+        positions.setdefault(color, []).append(index)
+    return {color: tuple(spots) for color, spots in positions.items()}
+
+
 class BoardState:
-    """Per-column pixel queues plus how far each column has been filled."""
+    """The picture as the one sequence the runtime clears it in, plus a cursor.
 
-    __slots__ = ("columns", "heads")
+    Top row down, right to left inside a row, empty cells skipped - so the whole
+    board is ``sequence`` and how far it has been paid for is ``cursor``. Only
+    the color at the cursor can be spent, which is what makes the conveyor tight:
+    every other box on it is waiting rather than working.
+    """
 
-    def __init__(self, columns: tuple[tuple[int, ...], ...], heads: list[int] | None = None) -> None:
-        self.columns = columns
-        self.heads = list(heads) if heads is not None else [0] * len(columns)
+    __slots__ = ("sequence", "positions", "cursor")
+
+    def __init__(
+        self,
+        sequence: tuple[int, ...],
+        positions: dict[int, tuple[int, ...]] | None = None,
+        cursor: int = 0,
+    ) -> None:
+        self.sequence = sequence
+        # Shared across clones: it only depends on the picture, never on progress.
+        self.positions = _index_positions(sequence) if positions is None else positions
+        self.cursor = cursor
 
     @classmethod
     def from_pixel_grid(cls, grid: PixelGridData) -> "BoardState":
-        columns: list[tuple[int, ...]] = []
-        for column in range(grid.width):
-            columns.append(
-                tuple(
-                    grid.get_color_id(row, column)
-                    for row in range(grid.height)
-                    if grid.get_color_id(row, column) != EMPTY_COLOR_ID
-                )
-            )
-        return cls(tuple(columns))
+        return cls(tuple(play_sequence(grid)))
 
     def clone(self) -> "BoardState":
-        return BoardState(self.columns, self.heads)
+        return BoardState(self.sequence, self.positions, self.cursor)
 
     def done(self) -> bool:
-        return all(head >= len(column) for head, column in zip(self.heads, self.columns))
+        return self.cursor >= len(self.sequence)
 
     def remaining_pixels(self) -> int:
-        return sum(len(column) - head for head, column in zip(self.heads, self.columns))
+        return len(self.sequence) - self.cursor
 
     def histogram(self) -> Counter[int]:
-        hist: Counter[int] = Counter()
-        for head, column in zip(self.heads, self.columns):
-            hist.update(column[head:])
-        return hist
+        return Counter(self.sequence[self.cursor :])
 
     def frontier_colors(self) -> set[int]:
-        return {
-            column[self.heads[index]]
-            for index, column in enumerate(self.columns)
-            if self.heads[index] < len(column)
-        }
+        """The one color that can be spent, or nothing once the picture is done."""
+        return set() if self.done() else {self.sequence[self.cursor]}
 
     def run_capacity(self, color: int) -> int:
-        """Balls of ``color`` the board can absorb without any other color moving."""
+        """Balls of ``color`` the board absorbs before any other color is wanted."""
         total = 0
-        for index, column in enumerate(self.columns):
-            head = self.heads[index]
-            while head < len(column) and column[head] == color:
-                total += 1
-                head += 1
+        cursor = self.cursor
+        while cursor < len(self.sequence) and self.sequence[cursor] == color:
+            total += 1
+            cursor += 1
         return total
 
+    def next_gap(self, color: int) -> int:
+        """Pixels to clear before ``color`` is wanted again, or ``-1`` if never.
+
+        A box tapped early holds conveyor room for exactly this long, so it is
+        what ranks the picks that are not the frontier color.
+        """
+        spots = self.positions.get(color)
+        if not spots:
+            return -1
+        index = bisect_left(spots, self.cursor)
+        return -1 if index >= len(spots) else spots[index] - self.cursor
+
     def fill(self, color: int, count: int) -> int:
-        """Fill up to ``count`` pixels of ``color``, left-most column first."""
+        """Pay for up to ``count`` frontier pixels with balls of ``color``."""
         consumed = 0
-        for index, column in enumerate(self.columns):
-            if consumed >= count:
-                break
-            head = self.heads[index]
-            while consumed < count and head < len(column) and column[head] == color:
-                head += 1
-                consumed += 1
-            self.heads[index] = head
+        while (
+            consumed < count
+            and self.cursor < len(self.sequence)
+            and self.sequence[self.cursor] == color
+        ):
+            self.cursor += 1
+            consumed += 1
         return consumed
 
-    def state_key(self) -> tuple[int, ...]:
-        return tuple(self.heads)
+    def state_key(self) -> int:
+        return self.cursor
 
 
 def drain(board: BoardState, tray: list[TrayBox]) -> None:
@@ -178,14 +229,15 @@ def box_multiset(board: BoardState, size: int = BALLS_PER_BOX) -> Counter[BoxSpe
 @dataclass
 class SolutionStep:
     box: BoxSpec
-    tray_used: int
+    belt_used: int
     safe_options: int = 0
 
 
 @dataclass
 class Solution:
     steps: list[SolutionStep] = field(default_factory=list)
-    required_tray: int = 1
+    required_belt: int = 0
+    peak_boxes: int = 0
     nodes: int = 0
 
     @property
@@ -204,15 +256,25 @@ def _search_key(
 
 
 def _ranked_children(board: BoardState, available: Counter[BoxSpec]) -> list[BoxSpec]:
-    """Candidate picks, best first: drain completely, then drain the most."""
+    """Candidate picks, best first: pay the frontier, then the soonest colour.
+
+    With a single frontier cell only one box can work at a time, so the pick that
+    matters most is the one the picture is asking for right now. Everything else
+    is a bet on the future and is ranked by how long it would squat on the
+    conveyor before paying off - a color wanted in three pixels is a far cheaper
+    bet than one wanted in eighty. Colors the picture never asks for again sort
+    last; they are pure dead weight.
+    """
     frontier = board.frontier_colors()
+    horizon = board.remaining_pixels() + 1
     scored = []
     for spec in available:
+        gap = board.next_gap(spec.color)
         capacity = board.run_capacity(spec.color)
         scored.append(
             (
                 0 if spec.color in frontier else 1,
-                0 if capacity >= spec.size else 1,
+                horizon if gap < 0 else gap,
                 -min(capacity, spec.size),
                 spec.sort_key(),
                 spec,
@@ -231,17 +293,17 @@ def solve_order(
 ) -> Solution | None:
     """Depth-first search for a pick order that empties the board.
 
-    A plain greedy walk is far too weak here: on a hand-made 18x16 picture it
-    demands two more tray slots than the level actually ships with, because one
-    early commitment can block a slot for a long time. The search explores
-    "drains completely" first, so the order it returns is also the one a player
-    would call natural, and memoises states so it stays cheap.
+    A plain greedy walk is far too weak here: paying the frontier is usually
+    right but not always, because the box that pays it now may be the one whose
+    leftovers jam the conveyor twenty pixels later. The search explores "pay the
+    frontier" first, so the order it returns is also the one a player would call
+    natural, and memoises states so it stays cheap.
 
     Returns ``None`` when no order wins within ``node_limit`` expansions.
     """
     seen: set[tuple] = set()
     nodes = 0
-    stack: list[tuple[BoardState, list[TrayBox], Counter[BoxSpec], list[tuple[BoxSpec, int]]]] = [
+    stack: list[tuple[BoardState, list[TrayBox], Counter[BoxSpec], list[tuple[BoxSpec, int, int]]]] = [
         (board.clone(), [], Counter(available), [])
     ]
 
@@ -254,18 +316,18 @@ def solve_order(
         drain(state_board, tray)
         _prune(tray)
         if state_board.done() and not tray:
-            solution = Solution(
-                steps=[SolutionStep(spec, tray_used) for spec, tray_used in path],
-                required_tray=max((tray_used for _, tray_used in path), default=1),
+            return Solution(
+                steps=[SolutionStep(spec, used) for spec, used, _ in path],
+                required_belt=max((used for _, used, _ in path), default=0),
+                peak_boxes=max((boxes for _, _, boxes in path), default=0),
                 nodes=nodes,
             )
-            return solution
 
         key = _search_key(state_board, tray, remaining)
         if key in seen:
             continue
         seen.add(key)
-        if len(tray) >= rules.tray_slots:
+        if not can_tap(tray, rules):
             continue
 
         # Pushed in reverse so the best-ranked child is popped first.
@@ -277,22 +339,94 @@ def solve_order(
             child_tray = [TrayBox(box.color, box.size, box.remaining) for box in tray]
             child_tray.append(TrayBox(spec.color, spec.size, spec.size))
             stack.append(
-                (state_board.clone(), child_tray, child_remaining, path + [(spec, len(child_tray))])
+                (
+                    state_board.clone(),
+                    child_tray,
+                    child_remaining,
+                    path + [(spec, belt_used(child_tray), len(child_tray))],
+                )
             )
     return None
 
 
-def minimum_tray(
+def lazy_order(
+    board: BoardState,
+    available: Counter[BoxSpec],
+    box_size: int = BALLS_PER_BOX,
+) -> Solution:
+    """The pick order that taps as late as legally possible. It always exists.
+
+    The frontier is a single cell, so at every moment exactly one color can be
+    spent. This play taps a box only when the picture is asking for that color
+    and nothing already on the belt can pay for it - which is the same play
+    :func:`picture_scan.belt_demand` measures, and no play holds less at any
+    point. It never gets stuck: the pixel histogram *is* the box multiset, so a
+    box of the frontier color is always left to tap, and it therefore wins on any
+    belt at least as wide as ``required_belt``.
+
+    That is what makes it the answer to "this picture wins on no belt the search
+    could find": it is not a better order than :func:`solve_order` looks for, it
+    is the one that is guaranteed to be there, and its ``required_belt`` says
+    exactly how wide the conveyor has to be for it.
+    """
+    state = board.clone()
+    remaining = Counter(available)
+    tray: list[TrayBox] = []
+    steps: list[SolutionStep] = []
+    peak_boxes = 0
+    drain(state, tray)
+    _prune(tray)
+    while not state.done():
+        color = next(iter(state.frontier_colors()))
+        spec = next(
+            (spec for spec in sorted(remaining, key=BoxSpec.sort_key) if spec.color == color),
+            None,
+        )
+        if spec is None:  # pragma: no cover - box_multiset is built from this histogram
+            raise GameplayError(
+                f"The picture still wants color {color} but no box of it is left."
+            )
+        remaining[spec] -= 1
+        if remaining[spec] <= 0:
+            del remaining[spec]
+        tray.append(TrayBox(spec.color, spec.size, spec.size))
+        # Recorded the way solve_order records it: after the tap, before draining,
+        # so the number is the belt the tap itself needed.
+        steps.append(SolutionStep(spec, belt_used(tray)))
+        peak_boxes = max(peak_boxes, len(tray))
+        drain(state, tray)
+        _prune(tray)
+    return Solution(
+        steps=steps,
+        required_belt=max((step.belt_used for step in steps), default=0),
+        peak_boxes=peak_boxes,
+    )
+
+
+def minimum_belt(
     board: BoardState,
     available: Counter[BoxSpec],
     *,
-    max_slots: int = 8,
+    box_size: int = BALLS_PER_BOX,
+    max_slots: int = DEFAULT_BELT_SLOTS,
+    min_slots: int = 0,
     node_limit: int = 60_000,
 ) -> int | None:
-    """Smallest ``piece`` a perfect player needs, or ``None`` if none up to ``max_slots``."""
-    for tray_slots in range(1, max_slots + 1):
-        if solve_order(board, available, GameRules(tray_slots), node_limit=node_limit) is not None:
-            return tray_slots
+    """Smallest conveyor a perfect player needs, or ``None`` if even ``max_slots`` loses.
+
+    Only whole boxes of room ever change the answer - a tap needs a whole box, so
+    a belt of 30 and a belt of 35 allow exactly the same three - which is why
+    this steps by ``box_size`` instead of walking every ball.
+
+    ``min_slots`` skips the belts that are known losers before the search runs:
+    the picture's own demand is a lower bound no play beats, so searching under it
+    only spends the node limit proving what the bound already said.
+    """
+    for boxes in range(max(1, -(-min_slots // box_size)), max_slots // box_size + 1):
+        slots = boxes * box_size
+        rules = GameRules(belt_slots=slots, box_size=box_size)
+        if solve_order(board, available, rules, node_limit=node_limit) is not None:
+            return slots
     return None
 
 
@@ -321,7 +455,7 @@ def is_feasible(
         if key in seen:
             continue
         seen.add(key)
-        if len(state_tray) >= rules.tray_slots:
+        if not can_tap(state_tray, rules):
             continue
         for spec in reversed(_ranked_children(state_board, remaining)):
             child_remaining = Counter(remaining)
@@ -430,13 +564,78 @@ def simulate_groups(board: BoardState, groups: list[list[BoxSpec]], rules: GameR
     for group in groups:
         drain(board, tray)
         _prune(tray)
-        if len(tray) + len(group) > rules.tray_slots:
+        if not can_tap(tray, rules, len(group)):
             return False
         for spec in group:
             tray.append(TrayBox(spec.color, spec.size, spec.size))
     drain(board, tray)
     _prune(tray)
     return board.done() and not tray
+
+
+def belt_peak(board: BoardState, groups: list[list[BoxSpec]], rules: GameRules) -> int | None:
+    """Fullest the conveyor ever gets while these picks are played, or None if they lose.
+
+    :func:`simulate_groups` answers "does this win", which is the only thing the
+    generator may not ship without. This answers the question after it: *how
+    close* did it come. The two are the same walk, so the peak costs nothing on
+    top of the check it replaces.
+
+    Measured the way :func:`solve_order` measures a step - right after the tap and
+    before the drain - so a play order's peak is directly comparable with the
+    ``belt_used`` of the walkthrough it was forced out of. The difference between
+    the two is what the obstacles cost the player.
+    """
+    board = board.clone()
+    tray: list[TrayBox] = []
+    peak = 0
+    for group in groups:
+        drain(board, tray)
+        _prune(tray)
+        if not can_tap(tray, rules, len(group)):
+            return None
+        for spec in group:
+            tray.append(TrayBox(spec.color, spec.size, spec.size))
+        peak = max(peak, belt_used(tray))
+    drain(board, tray)
+    _prune(tray)
+    if not board.done() or tray:
+        return None
+    return peak
+
+
+def tap_progress(
+    board: BoardState, groups: list[list[BoxSpec]], rules: GameRules
+) -> list[int] | None:
+    """Pixels already cleared off the picture at each tap, or None if the play loses.
+
+    This is the counter the two lock mechanics open on. ``Frozen`` and
+    ``LargeBlock`` do not name a box or a partner the way an ArrowLock does -
+    they name a number, and the runtime opens them when the picture has lost
+    that many pixels. So a lock whose count is at most ``progress[i]`` is
+    already open by the time step ``i`` comes round, and cannot delay - let
+    alone deadlock - this particular play order.
+
+    Read *before* the tap rather than after it, unlike :func:`belt_peak`,
+    because before the tap is when the runtime decides whether the tap is
+    allowed. Same walk otherwise, so the two are directly comparable.
+    """
+    board = board.clone()
+    tray: list[TrayBox] = []
+    progress: list[int] = []
+    for group in groups:
+        drain(board, tray)
+        _prune(tray)
+        progress.append(board.cursor)
+        if not can_tap(tray, rules, len(group)):
+            return None
+        for spec in group:
+            tray.append(TrayBox(spec.color, spec.size, spec.size))
+    drain(board, tray)
+    _prune(tray)
+    if not board.done() or tray:
+        return None
+    return progress
 
 
 def resolve_link_groups(sequence: list[int], links: list[tuple[int, int]]) -> list[list[int]]:
@@ -483,8 +682,9 @@ class DifficultyMetrics:
     total_balls: int = 0
     total_boxes: int = 0
     colors: int = 0
-    tray_slots: int = 1
-    required_tray: int = 1
+    belt_slots: int = DEFAULT_BELT_SLOTS
+    required_belt: int = 0
+    peak_boxes: int = 0
     min_safe_options: int = 0
     mean_safe_options: float = 0.0
     mean_total_options: float = 0.0
@@ -526,8 +726,9 @@ def measure_difficulty(
         total_balls=board.remaining_pixels(),
         total_boxes=len(order),
         colors=len(board.histogram()),
-        tray_slots=rules.tray_slots,
-        required_tray=solution.required_tray,
+        belt_slots=rules.belt_slots,
+        required_belt=solution.required_belt,
+        peak_boxes=solution.peak_boxes,
     )
     if not order:
         return metrics
@@ -551,7 +752,7 @@ def measure_difficulty(
                 if candidate == spec:
                     safe += 1  # proven winnable by solve_order
                     continue
-                if len(live_tray) >= rules.tray_slots:
+                if not can_tap(live_tray, rules):
                     continue
                 probe_available = Counter(live_available)
                 probe_available[candidate] -= 1

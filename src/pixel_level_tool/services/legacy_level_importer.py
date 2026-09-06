@@ -33,19 +33,26 @@ def _non_negative_int(value: object, field: str) -> int:
 class _LegacyColorRemapper:
     """Maps legacy color ids onto the current ``ItemColor`` ids.
 
-    ``0`` is treated as empty. Ids that already match a current ``ItemColor``
-    pass through unchanged. Unrecognized ids are assigned an unused current
-    color id on first sight, so the same legacy id always resolves the same way.
+    Ids that already match a current ``ItemColor`` pass through unchanged.
+    Unrecognized ids are assigned an unused current color id on first sight, so
+    the same legacy id always resolves the same way and the picture keeps its
+    shape even when its palette does not survive.
+
+    ``empty`` is the value that means "no pixel here", and it differs by export:
+    the oldest ``pixelBoard`` and ``map`` shapes write ``0``, while the
+    ``pixelGrid`` shape already uses ``-1`` like the current files - so there
+    ``0`` is a real color (Red) and must not be swallowed.
     """
 
-    def __init__(self, raw_values: list[int]) -> None:
+    def __init__(self, raw_values: list[int], *, empty: int = 0) -> None:
+        self._empty = empty
         self._valid_color_ids = {int(color) for color in ItemColor}
-        used = {value for value in raw_values if value != 0 and value in self._valid_color_ids}
+        used = {value for value in raw_values if value != empty and value in self._valid_color_ids}
         self._available = iter(sorted(self._valid_color_ids - used))
         self._replacement_by_legacy_id: dict[int, int] = {}
 
     def resolve(self, value: int, error: str) -> int:
-        if value == 0:
+        if value == self._empty:
             return EMPTY_COLOR_ID
         if value in self._valid_color_ids:
             return value
@@ -55,6 +62,11 @@ class _LegacyColorRemapper:
             except StopIteration as exc:
                 raise LegacyLevelImportError(error) from exc
         return self._replacement_by_legacy_id[value]
+
+    @property
+    def remapped(self) -> dict[int, int]:
+        """Legacy id -> current id, for the ids that had no current equivalent."""
+        return dict(self._replacement_by_legacy_id)
 
 
 def _pixel_grid_from_pixel_board(pixel_board: dict[str, object]) -> PixelGridData:
@@ -84,6 +96,52 @@ def _pixel_grid_from_pixel_board(pixel_board: dict[str, object]) -> PixelGridDat
             value,
             "Not enough unused current colors to replace all unsupported "
             f"legacy color ids (cannot replace {value} at pixelBoard.colors[{index}]).",
+        )
+        for index, value in enumerate(colors)
+    ]
+
+    return PixelGridData(width=width, height=height, color_ids=color_ids)
+
+
+def _pixel_grid_from_pixel_grid(pixel_grid: dict[str, object]) -> PixelGridData:
+    """The ``pixelGrid`` export: ``width``/``height`` plus one dense colour array.
+
+    This shape is already row-major and already writes ``-1`` for an empty cell,
+    so the only thing standing between it and the editor is its palette: these
+    exports carry colour ids past the end of the current :class:`ItemColor`
+    (17, 18, 23 and so on), which get folded onto free current ids.
+
+    The box side of the same file (``gridBoard``) is deliberately not read. Its
+    boxes carry a per-box ``capacity`` anywhere from 8 to 54 balls, and the
+    editor only builds ``Square_3x3`` boxes of exactly nine, so importing them
+    would mean inventing a box grid that is not the one in the file. The picture
+    is lossless; the boxes would not be, and Auto Gen Box rebuilds them anyway.
+    """
+    width = _positive_int(_object_field(pixel_grid, "width", "Width"), "pixelGrid.width")
+    height = _positive_int(_object_field(pixel_grid, "height", "Height"), "pixelGrid.height")
+    # "colors" is what these exports write; "colorIds" is what the editor writes,
+    # and accepting both means a current file can be imported as a picture too.
+    colors = _object_field(pixel_grid, "colors", "Colors", "colorIds", "ColorIds")
+    if not isinstance(colors, list):
+        raise LegacyLevelImportError("pixelGrid.colors must be an array.")
+
+    expected = width * height
+    if len(colors) != expected:
+        raise LegacyLevelImportError(
+            f"pixelGrid.colors contains {len(colors)} values; expected {expected} "
+            f"for a {width}x{height} grid."
+        )
+
+    for index, value in enumerate(colors):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise LegacyLevelImportError(f"pixelGrid.colors[{index}] must be an integer.")
+
+    remapper = _LegacyColorRemapper(colors, empty=EMPTY_COLOR_ID)
+    color_ids = [
+        remapper.resolve(
+            value,
+            "Not enough unused current colors to replace all unsupported "
+            f"legacy color ids (cannot replace {value} at pixelGrid.colors[{index}]).",
         )
         for index, value in enumerate(colors)
     ]
@@ -126,11 +184,17 @@ def legacy_pixel_grid_from_dict(data: dict[str, object]) -> PixelGridData:
     if isinstance(pixel_board, dict):
         return _pixel_grid_from_pixel_board(pixel_board)
 
+    pixel_grid = _object_field(data, "pixelGrid", "PixelGrid")
+    if isinstance(pixel_grid, dict):
+        return _pixel_grid_from_pixel_grid(pixel_grid)
+
     sparse_map = _object_field(data, "map", "Map")
     if isinstance(sparse_map, list):
         return _pixel_grid_from_sparse_map(sparse_map)
 
-    raise LegacyLevelImportError("Legacy JSON does not contain a pixelBoard object or a map array.")
+    raise LegacyLevelImportError(
+        "Legacy JSON does not contain a pixelBoard object, a pixelGrid object or a map array."
+    )
 
 
 def import_legacy_pixel_grid(path: str | Path) -> PixelGridData:

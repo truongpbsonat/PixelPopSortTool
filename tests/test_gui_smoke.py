@@ -136,6 +136,7 @@ def test_color_palette_stays_above_the_side_tabs(qtbot):
         "Box Inspector",
         "Obstacles",
         "Validation",
+        "Auto Gen Report",
     ]
 
     window.side_tabs.setCurrentIndex(1)

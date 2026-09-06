@@ -399,17 +399,17 @@ def dumps_level(level: PixelLevelData) -> str:
 
 
 def save_level(path: str | Path, level: PixelLevelData) -> None:
-    _write_content_atomic(path, dumps_level(level))
+    write_content_atomic(path, dumps_level(level))
 
 
 def save_level_document(path: str | Path, document: dict[str, Any]) -> None:
     if not isinstance(document, dict):
         raise LevelSerializationError("Root JSON must be an object.")
     content = json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
-    _write_content_atomic(path, _collapse_color_list_blocks(content) + "\n")
+    write_content_atomic(path, _collapse_color_list_blocks(content) + "\n")
 
 
-def _write_content_atomic(path: str | Path, content: str) -> None:
+def write_content_atomic(path: str | Path, content: str) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
