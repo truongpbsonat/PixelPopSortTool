@@ -1230,6 +1230,18 @@ opened or saved. Unsupported grid-cell subtypes are also rejected instead of bei
 | 14 | Teal | `#1AA6A6` |
 | 15 | Violet | `#8C59E6` |
 | 16 | White | `#FFFFFF` |
+| 17 | Color 17 | `#DC143C` |
+| 18 | Color 18 | `#FFBF00` |
+| 19 | Color 19 | `#10B981` |
+| 20 | Color 20 | `#0093AF` |
+| 21 | Color 21 | `#C724B1` |
+| 22 | Color 22 | `#3F0071` |
+| 23 | Color 23 | `#6B0F1A` |
+| 24 | Color 24 | `#6B6B1E` |
+| 25 | Color 25 | `#0B1F4D` |
+| 26 | Color 26 | `#FF9E80` |
+| 27 | Color 27 | `#57708A` |
+| 28 | Color 28 | `#98FFCB` |
 
 Empty pixels use `-1`.
 
