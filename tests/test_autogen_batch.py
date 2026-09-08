@@ -64,12 +64,12 @@ def _write_old_format_level(path, *, level=None, colors=None, size=6, piece=5) -
 
     Three things the current reader refuses, all in one file: the picture lives
     under `colors` rather than `colorIds`, the palette runs past `ItemColor`
-    (18 here), and the boxes are a `gridBoard` of capacities this editor does
+    (35 here), and the boxes are a `gridBoard` of capacities this editor does
     not build. This is what a folder of art from the game actually looks like.
     """
     if colors is None:
         rng = random.Random(4)
-        colors = [rng.choice([-1, 5, 15, 18]) for _ in range(size * size)]
+        colors = [rng.choice([-1, 5, 15, 35]) for _ in range(size * size)]
     document = {
         "time": 60,
         "piece": piece,
@@ -758,7 +758,7 @@ def test_an_old_format_level_file_is_read_as_a_source(tmp_path):
     assert level.piece == 5 and level.time == 60, "and the rest of its own numbers"
     painted = [value for value in level.pixel_grid.color_ids if value != EMPTY_COLOR_ID]
     assert painted, "the picture came through"
-    assert 18 not in painted, "the out-of-range colour was folded onto a free one"
+    assert 35 not in painted, "the out-of-range colour was folded onto a free one"
     assert not level.grid_cells, "the old boxes are left behind for Auto Gen Box"
 
 

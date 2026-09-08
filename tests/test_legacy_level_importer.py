@@ -70,7 +70,7 @@ def test_replacement_reserves_valid_colors_even_when_they_appear_later():
 
 
 def test_rejects_when_there_are_not_enough_unused_current_colors():
-    colors = [*range(1, 17), 99, 100]
+    colors = [*range(1, 29), 99, 100]
 
     with pytest.raises(LegacyLevelImportError, match="Not enough unused current colors"):
         legacy_pixel_grid_from_dict(
@@ -145,14 +145,14 @@ def test_pixel_grid_treats_minus_one_as_empty_and_zero_as_a_real_colour():
 
 
 def test_pixel_grid_folds_colours_past_the_current_palette_onto_free_ids():
-    """These exports carry ids like 17/18/23; the picture must survive them."""
+    """These exports carry ids like 29/30/35; the picture must survive them."""
     grid = legacy_pixel_grid_from_dict(
-        {"pixelGrid": {"width": 4, "height": 1, "colors": [3, 17, 18, 23]}}
+        {"pixelGrid": {"width": 4, "height": 1, "colors": [3, 29, 30, 35]}}
     )
 
     assert grid.color_ids[0] == 3, "an id the palette already has is left alone"
     folded = grid.color_ids[1:]
-    assert all(0 <= value <= 16 for value in folded)
+    assert all(0 <= value <= 28 for value in folded)
     assert len(set(folded)) == 3, "two legacy colours must never merge into one"
     assert 3 not in folded, "a colour already in use cannot be handed out again"
 

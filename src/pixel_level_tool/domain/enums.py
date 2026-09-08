@@ -24,6 +24,18 @@ class ItemColor(IntEnum):
     Teal = 14
     Violet = 15
     White = 16
+    Color17 = 17
+    Color18 = 18
+    Color19 = 19
+    Color20 = 20
+    Color21 = 21
+    Color22 = 22
+    Color23 = 23
+    Color24 = 24
+    Color25 = 25
+    Color26 = 26
+    Color27 = 27
+    Color28 = 28
 
 
 class CellShape(IntEnum):
@@ -98,6 +110,7 @@ class ThemeId(IntEnum):
     Theme2 = 2
     Theme3 = 3
     Theme4 = 4
+    Theme5 = 5
     Hard = 10
     SuperHard = 11
     None_ = 255
@@ -146,6 +159,7 @@ THEME_ID_LABELS: dict[ThemeId, str] = {
     ThemeId.Theme2: "Theme 2",
     ThemeId.Theme3: "Theme 3",
     ThemeId.Theme4: "Theme 4",
+    ThemeId.Theme5: "Theme 5",
     ThemeId.Hard: "Hard",
     ThemeId.SuperHard: "Super Hard",
 }
@@ -169,6 +183,18 @@ COLOR_NAMES: dict[ItemColor, str] = {
     ItemColor.Teal: "Teal",
     ItemColor.Violet: "Violet",
     ItemColor.White: "White",
+    ItemColor.Color17: "Color 17",
+    ItemColor.Color18: "Color 18",
+    ItemColor.Color19: "Color 19",
+    ItemColor.Color20: "Color 20",
+    ItemColor.Color21: "Color 21",
+    ItemColor.Color22: "Color 22",
+    ItemColor.Color23: "Color 23",
+    ItemColor.Color24: "Color 24",
+    ItemColor.Color25: "Color 25",
+    ItemColor.Color26: "Color 26",
+    ItemColor.Color27: "Color 27",
+    ItemColor.Color28: "Color 28",
 }
 
 
@@ -190,6 +216,18 @@ COLOR_HEX: dict[ItemColor, str] = {
     ItemColor.Teal: "#1AA6A6",
     ItemColor.Violet: "#8C59E6",
     ItemColor.White: "#FFFFFF",
+    ItemColor.Color17: "#DC143C",
+    ItemColor.Color18: "#FFBF00",
+    ItemColor.Color19: "#10B981",
+    ItemColor.Color20: "#0093AF",
+    ItemColor.Color21: "#C724B1",
+    ItemColor.Color22: "#3F0071",
+    ItemColor.Color23: "#6B0F1A",
+    ItemColor.Color24: "#6B6B1E",
+    ItemColor.Color25: "#0B1F4D",
+    ItemColor.Color26: "#FF9E80",
+    ItemColor.Color27: "#57708A",
+    ItemColor.Color28: "#98FFCB",
 }
 
 

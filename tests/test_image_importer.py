@@ -38,9 +38,9 @@ def test_image_import_maps_non_palette_rgb_to_nearest_item_color(tmp_path):
 
 def test_image_import_averages_only_center_one_third_region(tmp_path):
     image = PIL.new("RGB", (9, 9), (30, 144, 255))
-    # A 9x9 source cell produces a 3x3 centered sample.  Four red and five
+    # A 9x9 source cell produces a 3x3 centered sample.  Five red and four
     # yellow samples average to orange; the blue border must not affect it.
-    for index, color in enumerate([(229, 0, 0)] * 4 + [(253, 255, 0)] * 5):
+    for index, color in enumerate([(229, 0, 0)] * 5 + [(253, 255, 0)] * 4):
         image.putpixel((3 + index % 3, 3 + index // 3), color)
     path = tmp_path / "center-average.png"
     image.save(path)
