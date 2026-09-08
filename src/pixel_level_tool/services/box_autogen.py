@@ -59,8 +59,12 @@ ball of conveyor - which is why they are budgeted apart from the other five
    the runtime eats it (top row down, right to left, holes skipped) and reports
    the cheapest conveyor any play could get away with. That number is a lower
    bound, so a picture over the belt is refused here with an explanation rather
-   than after a long search that ends in "no". The colour count also names the
-   tier when ``auto_difficulty`` is set.
+   than after a long search that ends in "no". The colour count is also what the
+   tier is read off, in two steps rather than one: :func:`rate_picture` says what
+   the artwork *is* on the designer's three-wide scale (dễ, vừa, khó) and then
+   which of the four build tiers to aim at, which is what ``auto_difficulty``
+   hands the run. That tier is a **target**, not a description of what comes out -
+   see stage 12b.
 3. **Repair** - :func:`picture_repair.repair_picture`, and only for a picture the
    belt cannot hold: its short runs are merged into the colour beside them and
    paid back against their own kind, so every colour keeps its pixel count and
@@ -118,6 +122,20 @@ ball of conveyor - which is why they are budgeted apart from the other five
    mouth is not laid at all. It runs before Freeze because it is much the more
    constrained of the two: a grid has only a handful of late-wanted rectangles,
    and a Frozen box fits almost anywhere.
+12b. **Sum** - :func:`score_layer` reads the difficulty the finished level
+   actually adds up to: the boxes buried out of sight *and* every obstacle laid
+   on top, weighted into one number on the same 0-3 line the tiers live on. This
+   exists because nothing else ever asked it. The tier decides which mechanics,
+   relief decides how hard each one bites, and both of those are per-mechanic
+   decisions - so a Hard picture whose belt refused the hard forms shipped with a
+   Hard label and an Easy level underneath it, and no reading anywhere said so.
+   When the sum comes out under the target, :func:`climb_obstacles` takes one
+   mechanic at a time back to its tier's own setting - cheapest on the conveyor
+   first - rebuilding and re-scoring each time, and keeps a rung only if the
+   result is playable *and* the total went up. So a mechanic the picture cannot
+   pay for is paid for by one it can, and a level that still cannot reach its
+   tier ships saying how far short it came rather than wearing the label anyway.
+
 12. **Freeze** - a difficulty-driven share of the surface boxes gets the
    ``Frozen`` effect on the same counter, each one's ``frozenCount`` written at
    most a box below the pixel count the play order has cleared when it reaches
@@ -130,7 +148,13 @@ ball of conveyor - which is why they are budgeted apart from the other five
    order the tunnels, links and locks actually force, its histograms are checked
    against the pixel grid, :class:`level_validator.LevelValidator` is asked
    whether the file it produced is legal, and
-   :func:`pixel_gameplay.measure_difficulty` scores it.
+   :func:`pixel_gameplay.measure_difficulty` scores it. Three separate questions
+   come out of here and a level can fail them one at a time:
+   :attr:`AutoGenResult.winnable` (can it be cleared on its own belt),
+   :attr:`AutoGenResult.valid` (does the file load) and
+   :attr:`AutoGenResult.difficulty_matched` (is it the difficulty the picture
+   asked for). Only the last one is about the design rather than about
+   correctness, which is why it is a warning and not an error.
 
 Stages 6-12 are one unit and can run more than once. A finished mechanic layer is
 read back rather than trusted, on two separate questions: whether the conveyor
@@ -143,10 +167,22 @@ box both replay as wins and are dead in the runtime. A lock that opens after the
 play order wants the box behind it is the third of them, and the worst: it wins
 in the model and deadlocks in the runtime with no way back. They are read off the
 finished layout instead, and a layer that has one never ships.
+
+One case is outside both of those readings, and :data:`BURIAL_GROUPS` is the
+answer to it: the picture does not win on the belt the level ships with at all.
+The obstacles are then certified against the belt the picture *needs*, so the
+belt refuses nothing and neither reading fires - while Hidden, which never costs
+a ball, is not something a belt check could cut in the first place. So the
+*burial* alone is floored at Easy - laid in solution order, in plain sight,
+handed over when asked for - and every obstacle on top keeps its tier's form and
+is still climbed, so the level is not stripped. The tier, the theme and the
+mechanics the level carries are untouched, and raising ``piece`` to the number in
+the warning hands the tier's own burial straight back.
 """
 
 import random
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
 from pixel_level_tool.domain.enums import (
@@ -173,15 +209,20 @@ from pixel_level_tool.domain.level_models import (
 from pixel_level_tool.services.level_validator import LevelValidator, ValidationMessage
 from pixel_level_tool.services.picture_repair import (
     RepairReport,
+    belt_summary,
+    drop_scattered_colors,
+    merge_summary,
     repair_picture,
-    repair_summary,
 )
 from pixel_level_tool.services.picture_scan import (
     DEFAULT_BELT_SLOTS,
+    EASY_MAX_COLORS,
+    FRAGMENTED,
+    MEDIUM_MAX_COLORS,
     BeltJam,
     PictureScan,
+    difficulty_for_colors,
     scan_picture,
-    suggest_difficulty,
 )
 from pixel_level_tool.services.pixel_gameplay import (
     BoardState,
@@ -255,6 +296,12 @@ REFERENCE_BOXES = 30
 # A wall costs a whole slot and narrows the way in to its neighbours, so it is
 # the most expensive difficulty knob here: at most one wall per this many boxes.
 WALL_BOX_BUDGET = 4
+
+# What a wall is *for*, and it takes two of them: a pinch is a pair flanking one
+# box, so that box keeps a single way in - see `_wall_groups`. A tier's wall
+# count is therefore a pinch count in disguise, which is what makes the pinches a
+# level really got comparable with the number the tier asked for.
+WALLS_PER_PINCH = 2
 
 # An ArrowLock box is dead weight until its key box goes, so a grid full of them
 # leaves the player nothing to tap: at most one locked box per this many boxes.
@@ -560,6 +607,115 @@ DIFFICULTY_FORCED_THEME: dict[int, int] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Stage 2b - the difficulty read off the picture
+# --------------------------------------------------------------------------- #
+# The designer's own scale for a piece of artwork: three words wide, because that
+# is what somebody says out loud about a picture. Deliberately shorter than the
+# four build tiers - "khó" is one word and covers both Hard and SuperHard.
+PICTURE_BANDS = ("dễ", "vừa", "khó")
+BAND_EASY, BAND_MEDIUM, BAND_HARD = range(3)
+
+
+def band_for_colors(colors: int) -> int:
+    """Where a picture sits on the designer's three-wide scale.
+
+    The same two thresholds :func:`picture_scan.difficulty_for_colors` uses, read
+    one scale shorter: everything past ``MEDIUM_MAX_COLORS`` is simply "khó",
+    whether it ends up asking for Hard or for SuperHard.
+    """
+    if colors <= EASY_MAX_COLORS:
+        return BAND_EASY
+    if colors <= MEDIUM_MAX_COLORS:
+        return BAND_MEDIUM
+    return BAND_HARD
+
+
+@dataclass(frozen=True)
+class PictureRating:
+    """One picture, read twice: what it *is*, and what tier to build for it.
+
+    These used to be one line - a colour count mapped straight onto a tier - and
+    two different questions were riding on it:
+
+    1. **What is this picture?** A three-wide reading of the artwork itself, off
+       the thing a designer can see at a glance: how many colours it is painted
+       in. That is :attr:`band`, and it is a statement, not a decision.
+    2. **Which level should be built for it?** Four wide, because the fourth tier
+       exists for pictures past what the designer's scale was drawn for. That is
+       :attr:`tier`, and it is the *target* the obstacle layer is then built up
+       to - see :class:`DifficultyClimb`.
+
+    They cannot be the same reading, because they are not the same width: a
+    twelve-colour picture and a twenty-colour one are both "khó" to look at, and
+    only the second one asks for SuperHard.
+
+    What :attr:`tier` is **not** is a description of the level that comes out.
+    The tier is what the picture asked for; whether the obstacles actually added
+    up to it is measured afterwards, by :func:`score_layer`.
+    """
+
+    colors: int = 0
+    fragmentation: float = 0.0
+    painted: int = 0
+    # The three-wide reading of the artwork, before the noise bump.
+    band: int = BAND_EASY
+    # The four-wide target, after it.
+    tier: int = int(LevelDifficulty.Easy)
+    # The tier the colour count alone asked for, kept so the bump stays visible.
+    color_tier: int = int(LevelDifficulty.Easy)
+    fragmented: bool = False
+
+    @property
+    def band_label(self) -> str:
+        return PICTURE_BANDS[self.band]
+
+    @property
+    def tier_label(self) -> str:
+        return DIFFICULTY_PROFILES[self.tier].label
+
+    @property
+    def bumped(self) -> bool:
+        """Did fragmentation move the target above what the colours asked for?"""
+        return self.tier > self.color_tier
+
+    @property
+    def reason(self) -> str:
+        """Why this picture reads as it does, in the terms it was read in."""
+        base = f"{self.colors} màu → tranh {self.band_label}"
+        if self.bumped:
+            return (
+                f"{base}, độ vụn {self.fragmentation:.0%} ≥ {FRAGMENTED:.0%} nên nâng"
+                f" một nấc → {self.tier_label}"
+            )
+        return f"{base} → {self.tier_label}, độ vụn {self.fragmentation:.0%} chưa tới ngưỡng nâng nấc"
+
+
+def rate_picture(scan: PictureScan) -> PictureRating:
+    """Read the band first, then choose the tier from it. In that order.
+
+    A picture painted as noise plays harder than its colour count suggests, so a
+    heavily fragmented one is pushed up a tier. It is never pushed *down*: a
+    twelve-colour picture in neat bands is still twelve colours to read, which is
+    the thing the count was measuring in the first place.
+    """
+    colors = scan.colors
+    color_tier = difficulty_for_colors(colors)
+    tier = color_tier
+    fragmented = scan.fragmentation >= FRAGMENTED
+    if fragmented and tier < int(LevelDifficulty.SuperHard):
+        tier += 1
+    return PictureRating(
+        colors=colors,
+        fragmentation=scan.fragmentation,
+        painted=scan.painted,
+        band=band_for_colors(colors),
+        tier=tier,
+        color_tier=color_tier,
+        fragmented=fragmented,
+    )
+
+
 @dataclass
 class AutoGenOptions:
     # -1 asks the scanner to read the tier off the picture instead of trusting a
@@ -613,16 +769,38 @@ class AutoGenOptions:
     lock_margin: int = LOCK_MARGIN
     # How the final number is written: "odd" (default), "five", "ten", "none".
     lock_rounding: str = "odd"
+    # Measure what the finished level adds up to and, when it comes out gentler
+    # than the tier the picture asked for, harden the mechanics it can still
+    # afford until it gets there - see `DifficultyClimb`. Off ships whatever the
+    # relief ladder left, which is what the tool used to do: a Hard picture
+    # relieved two tiers went out wearing a Hard label and playing like an Easy
+    # one, and nothing said so.
+    difficulty_climb: bool = True
     # Let a picture that already fills the conveyor pull the *form* of the
     # obstacles down a tier or two - the mechanics stay, they just stop being
     # dosed as if the belt were empty. Off hands every level its tier's own forms
     # whatever the picture costs, which is what the tool used to do.
     obstacle_relief: bool = True
+    # The one case `obstacle_relief` above cannot see: a picture that does not win
+    # on the level's own belt at all. The obstacles are certified against the belt
+    # the picture *needs*, so the belt refuses nothing and the burial ships at the
+    # tier's own form on a level nobody can finish. On floors the *burial* at
+    # Easy's forms - and only the burial, so the obstacles laid on top stay and
+    # keep being climbed - which makes the level readable the moment `piece` is
+    # raised to the number in the warning. See `BURIAL_GROUPS`.
+    jam_relief: bool = True
     # Recolour the picture until it plays on the belt the level ships with: short
     # runs are merged into the colour beside them and paid back beside their own
     # kind, so every colour keeps its pixel count and the box multiset does not
     # move. Only ever engages on a picture that cannot be won as painted.
     repair_picture: bool = True
+    # The last resort for a picture too shredded for `repair_picture` to save:
+    # drop the most scattered colour outright and give its pixels to the colours
+    # already beside them, one colour at a time, until the picture plays. Off by
+    # default because it is the only repair that changes what the artwork is made
+    # of - the palette comes back shorter. Engages only when the safe pass has
+    # already run and the picture still cannot be won.
+    drop_scattered_colors: bool = False
     # Notches to step the difficulty *down* from what the picture reads as, and
     # the same for the obstacle forms. 0 is the scenario the picture asked for;
     # 1 turns a Hard picture into a Medium level, 2 into an Easy one. This is a
@@ -968,6 +1146,27 @@ def resolve_tunnel_mode(options: AutoGenOptions, plan: ObstaclePlan) -> str:
 # alternative - never a ball on the belt, so no belt check can ever cut them.
 BELT_SPENDING_KINDS = ("tunnel", "linked")
 
+# The half of a level's difficulty that is *burial* - what the player cannot see
+# or cannot reach yet - as opposed to the obstacles laid on top of it. The split
+# is :data:`DIFFICULTY_DIALS`' own, and the module docstring's: a picture is made
+# hard mostly by what is hidden, and the rest by what is in the way.
+#
+# It is named here because of the line right above. Hidden never costs a ball, so
+# no belt check anywhere is able to cut it, and on a picture that cannot be won
+# at all that is the worst combination the tool can ship: the player is already
+# going to run the conveyor dry, and the tier would additionally hide 60% of the
+# surface and scatter the box they need next anywhere on the grid. Relief cannot
+# see that case - it only reacts to what the belt *refuses*, and the belt refuses
+# nothing here, because the obstacles are certified against `required_belt`
+# rather than against the belt the level actually has.
+#
+# So on a jammed picture these three go to Easy's setting and nothing else does:
+# the boxes are laid in solution order, in plain sight, handed over exactly when
+# the picture asks for them. Every obstacle *on top* keeps its tier's form and
+# the climb still buys more of them back (:func:`climb_obstacles`), so the level
+# is not stripped - what it loses is only the part that made it unreadable.
+BURIAL_GROUPS = ("hidden", "scramble", "tunnel")
+
 
 def belt_room(required_belt: int, belt_slots: int) -> int:
     """Whole boxes of conveyor left over once the picture's own play is paid for.
@@ -1055,6 +1254,12 @@ class ObstacleRelief:
     # asked for a gentler build with `ease_obstacles`, which is a decision rather
     # than something the belt forced.
     top: int = int(LevelDifficulty.Easy)
+    # The burial was floored at Easy's forms - see `unbury_profile` - because the
+    # picture reported "KHÔNG THỂ THẮNG" before a single box existed. Deliberately
+    # *not* a count of tiers: it moves three dials and leaves the rest of the form
+    # exactly where the ladder put them, so it is not a rung on this ladder at all
+    # and `form`, `top` and `eased` all read the same with it on as without.
+    unburied: bool = False
     # Belt the picture's own cheapest winning play needs, out of what it has, and
     # the whole boxes that leaves over. Reported rather than decided on: it is the
     # reading that explains *why* a form did not fit.
@@ -1239,14 +1444,39 @@ def build_obstacle_layer(
     form: int,
     rules: GameRules,
     seed: int,
+    climb: Sequence[str] = (),
+    climb_from: int | None = None,
+    bury_easy: bool = False,
 ) -> ObstacleLayer:
     """Lay out the grid and spend every mechanic in the plan, at one given form.
 
     The rng is seeded here rather than passed in, so an attempt depends only on
     the form it was built at: stepping down does not shift the grid of the form
     that is finally kept, and the same seed and form always give the same level.
+
+    ``climb`` names the mechanics whose dials are taken back off ``climb_from``
+    (the tier itself when it is None) after the form has been softened, which is
+    how :func:`climb_obstacles` buys a shortfall back one mechanic at a time. It
+    is a per-mechanic override of the form and nothing else: no mechanic is added
+    or removed by it, because that is ``plan``'s business.
+
+    ``bury_easy`` floors the burial dials at Easy's whatever the form and the
+    climb decided, for a picture that cannot be won on its own belt at all -
+    :func:`unbury_profile`.
     """
     profile = soften_profile(tier_profile, difficulty, form)
+    if climb:
+        profile = harden_profile(
+            profile,
+            DIFFICULTY_PROFILES[difficulty if climb_from is None else climb_from],
+            climb,
+        )
+    # Last, so it is a floor and not an argument: `bury_easy` is set for a
+    # picture that cannot be won on the belt the level ships with, and neither
+    # the form nor a climb rung is allowed to put the burial back. See
+    # :data:`BURIAL_GROUPS`.
+    if bury_easy:
+        profile = unbury_profile(profile)
     rng = random.Random(seed)
 
     cols, rows, placements, blocks, tunnel_slots, facings, wall_slots, pinched = _layout(
@@ -1309,6 +1539,14 @@ def build_obstacle_layer(
     }
     total_pixels = len(board.sequence)
 
+    # Read the picture per colour *before* a single lock is placed: where the
+    # frontier asks for each colour, and how many balls of it the grid holds.
+    # Only the frontier colour can be spent, so this is what says whether a box
+    # can clear anything at the moment a lock would be holding it shut - and it
+    # is a fact about the picture, true for every order the player might tap in,
+    # unlike `progress`, which is true only of the one order just certified.
+    supply = read_color_supply(board.sequence, solution.order)
+
     # Slabs first, then Frozen. A slab needs a solid rectangle of boxes the play
     # order visits late and a grid has only a handful of those; a Frozen box needs
     # one box of a colour with a spare, and almost anything qualifies. Running the
@@ -1327,6 +1565,8 @@ def build_obstacle_layer(
         partners[right.order_index] = left.order_index
     slabs = plan_slabs(
         placements,
+        solution.order,
+        supply,
         progress,
         cols,
         rows,
@@ -1342,13 +1582,19 @@ def build_obstacle_layer(
         rng,
     )
     slab_covered = {index for slab in slabs for index in slab.covered}
+    # What the slabs hold back, handed to Frozen so it reads the picture the
+    # slabs left rather than the one it started with: a colour whose only spare
+    # box went under a slab has no spare any more.
+    slab_shut = {index: slab.count for slab in slabs for index in slab.covered}
     frozen_count = (
         plan_frozen_count(len(placements), options, profile) if plan.has("frozen") else 0
     )
     frozen = plan_frozen(
         placements,
         solution.order,
+        supply,
         progress,
+        slab_shut,
         frozen_count,
         total_pixels,
         profile,
@@ -1393,6 +1639,10 @@ def build_obstacle_layer(
     # The replay cannot see this either - it taps by index and counts no pixels -
     # so a level with a late lock wins in the model and deadlocks in the runtime.
     faults.extend(locks_hold(frozen, slabs, progress, options.lock_margin))
+    # And the fifth, which `locks_hold` cannot see: a set of counters the
+    # certified line clears but no other order can, because between them they
+    # starve a colour the picture asks for before any of them opens.
+    faults.extend(locks_open(board.sequence, solution.order, frozen, slabs))
     if len(frozen) >= len(placements) and placements:
         faults.append("mọi box mặt ngoài đều Frozen, không có box nào tap được lúc bắt đầu")
 
@@ -1507,6 +1757,7 @@ def relieve_obstacles(
     rules: GameRules,
     seed: int,
     base: ObstacleLayer,
+    bury_easy: bool = False,
 ) -> tuple[ObstacleLayer, ObstacleRelief]:
     """Lay the mechanics on the certified base, at the hardest form it survives.
 
@@ -1553,6 +1804,7 @@ def relieve_obstacles(
                 form=form,
                 rules=rules,
                 seed=seed,
+                bury_easy=bury_easy,
             )
         )
         if not options.obstacle_relief:
@@ -1572,6 +1824,7 @@ def relieve_obstacles(
         difficulty=difficulty,
         form=layer.form,
         top=top,
+        unburied=bury_easy,
         required_belt=solution.required_belt,
         belt_slots=rules.belt_slots,
         room=belt_room(solution.required_belt, rules.belt_slots),
@@ -1583,6 +1836,571 @@ def relieve_obstacles(
         enabled=options.obstacle_relief,
     )
     return layer, relief
+
+
+# --------------------------------------------------------------------------- #
+# Stage 12b - what the finished level adds up to, and climbing it to the target
+# --------------------------------------------------------------------------- #
+# Every reading the score is taken over, grouped by the mechanic it belongs to,
+# and what each group is worth.
+#
+# The point of grouping them is that a level's difficulty is a *sum*, not a list
+# of separate verdicts. "This picture is Hard" is a statement about the whole
+# level - the boxes buried out of sight plus every obstacle laid on top - so a
+# shortfall in one group can be paid for by another, and no single group is
+# checked against the tier on its own. The three burial readings come to 4.5 of
+# the 10 and the six obstacle ones to the other 5.5, which is the split the
+# module docstring describes: a picture is made hard mostly by what the player
+# cannot see, and the rest by what is in the way.
+#
+# The weights are relative and nothing else: the anchors below are summed with
+# the same numbers, so what a weight actually decides is how far one mechanic
+# moves the total - i.e. how much of a shortfall a climb can buy back with it.
+DIFFICULTY_DIALS: dict[str, tuple[str, ...]] = {
+    # Boxes the player cannot see or cannot reach yet: "box duoc chon".
+    "hidden": ("hidden_ratio",),
+    "scramble": ("scramble",),
+    "tunnel": ("dig_window", "tunnel_placement"),
+    # Obstacles laid on top.
+    "wall": ("wall_pinches",),
+    "arrow": ("arrow_ratio", "arrow_reach"),
+    "linked": ("linked_pairs", "linked_mode", "clean_links"),
+    "frozen": ("frozen_ratio",),
+    "block": ("blocks",),
+    "lock": ("lock_bite",),
+}
+DIFFICULTY_WEIGHTS: dict[str, float] = {
+    "hidden": 2.0,
+    "scramble": 1.0,
+    "tunnel": 1.5,
+    "wall": 1.0,
+    "arrow": 1.25,
+    "linked": 1.25,
+    "frozen": 0.75,
+    "block": 0.75,
+    "lock": 0.5,
+}
+# The two groups that are not one of OBSTACLE_KIND_LABELS' mechanics, because no
+# budget buys them: the layout is always scrambled somehow, and a lock's timing
+# rides on whichever of the two locks the level already carries.
+DIFFICULTY_GROUP_LABELS: dict[str, str] = OBSTACLE_KIND_LABELS | {
+    "scramble": "xáo trộn lưới",
+    "lock": "độ trễ mở khoá",
+}
+
+# The readings that are a *choice between forms* rather than a number, easiest
+# first, so the index into the tuple is already "harder = larger". Each one is
+# the option list the knob itself is validated against, minus the leading "auto"
+# where it has one - "auto" is a request to decide, never a form a level is in.
+DIAL_ORDERS: dict[str, tuple[str, ...]] = {
+    "scramble": SCRAMBLE_MODES,
+    "tunnel_placement": TUNNEL_PLACEMENTS[1:],
+    "arrow_reach": ARROW_REACH,
+    "linked_mode": LINKED_MODES[1:],
+}
+
+
+def _form_notch(dial: str, form: str) -> float:
+    order = DIAL_ORDERS[dial]
+    return float(order.index(form)) if form in order else 0.0
+
+
+def layer_dials(layer: ObstacleLayer) -> dict[str, float]:
+    """One finished layer as the flat dial table the ladders are read against.
+
+    Counts become shares wherever the profile takes a share (Hidden, ArrowLock,
+    Frozen) so that a layer and a profile are comparable dial for dial, and the
+    numbers are the ones actually **laid** rather than the ones asked for -
+    `hidden` not `hidden_count`, `linked` not `link_count`. What the belt refused
+    is exactly what must not be scored.
+
+    The *forms* - how the grid is scrambled, how far an arrow reaches, whether a
+    pair clears clean - are read off `layer.profile`, the profile this layer was
+    really built at, because for those the profile **is** the level: there is
+    nothing else they could be. A mechanic the layer does not carry reads as the
+    bottom of its dial rather than as Easy's setting, so an absent
+    LinkedContainer is not credited with Easy's "sync, clears clean".
+    """
+    profile = layer.profile
+    surface = len(layer.placements)
+    buried = any(layer.queues)
+    return {
+        "hidden_ratio": len(layer.hidden) / surface if surface else 0.0,
+        "scramble": _form_notch("scramble", profile.scramble),
+        # A tunnel nobody filled buries nothing, whatever the profile asked for.
+        "dig_window": float(max(layer.dig_windows, default=1) if buried else 1),
+        "tunnel_placement": (
+            _form_notch("tunnel_placement", profile.tunnel_placement) if buried else 0.0
+        ),
+        # The pinches, not the empty slots. Every slot the boxes do not fill is a
+        # wall - see `_layout` - so a picture that simply tiles badly leaves
+        # leftovers nobody asked for, and counting those would hand it a wall
+        # score it never designed for. A wall that narrows a box down to one
+        # approach is the mechanic; a wall sitting in a corner is a gap.
+        "wall_pinches": float(len(layer.pinched)),
+        "arrow_ratio": len(layer.arrows) / surface if surface else 0.0,
+        "arrow_reach": (
+            _form_notch("arrow_reach", profile.arrow_reach) if layer.arrows else 0.0
+        ),
+        "linked_pairs": float(len(layer.linked)),
+        "linked_mode": (
+            _form_notch("linked_mode", layer.linked_mode) if layer.linked else 0.0
+        ),
+        "clean_links": 0.0 if profile.clean_links or not layer.linked else 1.0,
+        "frozen_ratio": len(layer.frozen) / surface if surface else 0.0,
+        "blocks": float(len(layer.slabs)),
+        # How late a lock opens, read as a bite rather than as a window, so that
+        # a level with no lock at all sits below every tier instead of above
+        # them: a *small* window is the hard one, and 0 would read as hardest.
+        "lock_bite": (
+            (1.0 - profile.lock_window) if (layer.frozen or layer.slabs) else 0.0
+        ),
+    }
+
+
+def profile_dials(profile: DifficultyProfile) -> dict[str, float]:
+    """The same table for a tier, i.e. that tier's dials spent in full."""
+    return {
+        "hidden_ratio": profile.hidden_ratio,
+        "scramble": _form_notch("scramble", profile.scramble),
+        "dig_window": float(profile.dig_window),
+        "tunnel_placement": _form_notch("tunnel_placement", profile.tunnel_placement),
+        "wall_pinches": float(profile.walls // WALLS_PER_PINCH),
+        "arrow_ratio": profile.arrow_ratio,
+        "arrow_reach": (
+            _form_notch("arrow_reach", profile.arrow_reach) if profile.arrow_ratio else 0.0
+        ),
+        "linked_pairs": float(profile.linked_pairs),
+        "linked_mode": (
+            _form_notch("linked_mode", profile.linked_mode) if profile.linked_pairs else 0.0
+        ),
+        "clean_links": 0.0 if profile.clean_links or not profile.linked_pairs else 1.0,
+        "frozen_ratio": profile.frozen_ratio,
+        "blocks": float(profile.blocks),
+        "lock_bite": (
+            (1.0 - profile.lock_window) if (profile.frozen_ratio or profile.blocks) else 0.0
+        ),
+    }
+
+
+def ladder_notch(value: float, ladder: Sequence[float]) -> float:
+    """Where ``value`` sits on a four-tier ladder, as a notch on the 0-3 line.
+
+    The ladder is a dial as the four canonical profiles write it, so the notch
+    that comes back is on exactly the scale the designer already reads - the same
+    0/1/2/3 as :class:`LevelDifficulty` - rather than on an invented 0-100.
+    Between two tiers the answer is interpolated, so 1.6 means "past Medium, not
+    yet Hard" and can be reported as such.
+
+    Anything at or under the easy tier's own setting is 0, because Easy *is* the
+    bottom of this scale: there is no gentler level to be short of. Anything past
+    the hardest tier's setting is 3 - nothing above SuperHard is ever the target,
+    so measuring how far past it a dial went would be measuring nothing.
+
+    A flat rung - ``walls`` is (0, 0, 2, 4), because neither easy tier has one -
+    is read from its *bottom*, so a level with no wall scores 0 for walls rather
+    than being credited with Medium's wall count of zero as if it were a choice.
+    """
+    steps = list(ladder)
+    if not steps:  # pragma: no cover - every dial has four rungs
+        return 0.0
+    if value <= steps[0]:
+        return 0.0
+    for index in range(1, len(steps)):
+        if value <= steps[index]:
+            low, high = steps[index - 1], steps[index]
+            if high <= low:
+                return float(index)
+            return (index - 1) + (value - low) / (high - low)
+    return float(len(steps) - 1)
+
+
+def dial_ladder(dial: str) -> tuple[float, ...]:
+    """One dial as the four canonical profiles write it, Easy first."""
+    return tuple(
+        profile_dials(DIFFICULTY_PROFILES[tier])[dial] for tier in sorted(DIFFICULTY_PROFILES)
+    )
+
+
+def group_notch(group: str, dials: dict[str, float]) -> float:
+    """One mechanic's notch: the mean of the notches of the dials that set it."""
+    names = DIFFICULTY_DIALS[group]
+    return sum(ladder_notch(dials[name], dial_ladder(name)) for name in names) / len(names)
+
+
+def raw_difficulty(dials: dict[str, float]) -> float:
+    """Every group's notch, weighted and summed. Not yet on the 0-3 line."""
+    return sum(
+        DIFFICULTY_WEIGHTS[group] * group_notch(group, dials) for group in DIFFICULTY_DIALS
+    )
+
+
+def difficulty_anchors() -> tuple[float, ...]:
+    """:func:`raw_difficulty` of each canonical tier, spent in full. Easy first.
+
+    This is what the score is measured against, and it is why there is not a
+    single hand-picked threshold in here: the four rows of
+    :data:`DIFFICULTY_PROFILES` *are* the scale. Edit a profile and the band
+    moves with it, so the score cannot quietly drift away from what a tier means.
+    """
+    return tuple(
+        raw_difficulty(profile_dials(DIFFICULTY_PROFILES[tier]))
+        for tier in sorted(DIFFICULTY_PROFILES)
+    )
+
+
+@dataclass(frozen=True)
+class LevelDifficultyScore:
+    """How hard the level that came out actually is, as one number, and why.
+
+    ``notch`` is that number, on the 0-3 line the tiers themselves live on: 2.0
+    is exactly what a Hard profile spent in full comes to, and 1.6 is a level
+    that got most of the way from Medium to Hard. ``target`` is what the picture
+    asked for, so the two are directly comparable and the gap between them is
+    the thing :func:`climb_obstacles` is trying to close.
+
+    ``groups`` is the same reading un-summed, which is what makes a shortfall
+    actionable: it says *which* mechanic came out gentler than the tier wanted,
+    and therefore which one is worth hardening.
+    """
+
+    groups: dict[str, float] = field(default_factory=dict)
+    raw: float = 0.0
+    anchors: tuple[float, ...] = ()
+    notch: float = 0.0
+    target: int = int(LevelDifficulty.Easy)
+
+    @property
+    def tier(self) -> int:
+        """The notch rounded to a tier, which is the label a level would carry."""
+        tiers = sorted(DIFFICULTY_PROFILES)
+        return min(max(tiers), max(min(tiers), round(self.notch)))
+
+    @property
+    def label(self) -> str:
+        return DIFFICULTY_PROFILES[self.tier].label
+
+    @property
+    def target_label(self) -> str:
+        return DIFFICULTY_PROFILES[self.target].label
+
+    @property
+    def reached(self) -> bool:
+        """Does the level as a whole read as the tier the picture asked for?
+
+        Asked of the rounded tier rather than of the raw notch, because the tier
+        is what the level ships as: a Hard target met at 1.62 rounds to Hard and
+        is Hard. Half a notch short of that is a level wearing the wrong label.
+        """
+        return self.tier >= self.target
+
+    @property
+    def shortfall(self) -> float:
+        return max(0.0, float(self.target) - self.notch)
+
+    @property
+    def summary(self) -> str:
+        return (
+            f"{self.notch:.2f}/3 = {self.label}"
+            f" (mục tiêu {self.target}.00 = {self.target_label})"
+        )
+
+
+def score_layer(layer: ObstacleLayer, *, target: int) -> LevelDifficultyScore:
+    """Score one finished layer against the tier the picture asked for."""
+    dials = layer_dials(layer)
+    return LevelDifficultyScore(
+        groups={group: group_notch(group, dials) for group in DIFFICULTY_DIALS},
+        raw=raw_difficulty(dials),
+        anchors=difficulty_anchors(),
+        # The same interpolation the dials use, over the anchors instead of over
+        # one dial's rungs: the four tiers are the ladder here too.
+        notch=ladder_notch(raw_difficulty(dials), difficulty_anchors()),
+        target=target,
+    )
+
+
+# Which dials each rung of the climb takes back, and the order the rungs are
+# walked in.
+#
+# The order is the whole design of the climb: what spends no conveyor comes
+# first. A level is short of its tier precisely when the belt refused to pay for
+# something, so reaching straight for one of :data:`BELT_SPENDING_KINDS` is
+# asking the question that already got a no - those two are the last resort.
+# Everything above them is free on the belt for a different reason each: the two
+# locks are derived from the certified play order, Hidden only hides a colour,
+# an arrow's key is always a box the order opens earlier, and a wall and the
+# scramble cost slots and distance rather than balls.
+CLIMB_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("frozen", ("frozen_ratio", "frozen_at")),
+    ("block", ("blocks", "block_span", "block_at")),
+    ("lock", ("lock_window",)),
+    ("hidden", ("hidden_ratio",)),
+    ("arrow", ("arrow_ratio", "arrow_reach")),
+    ("wall", ("walls",)),
+    ("scramble", ("scramble",)),
+    ("tunnel", ("dig_window", "tunnel_depth", "tunnels", "tunnel_placement")),
+    ("linked", ("linked_pairs", "linked_mode", "clean_links")),
+)
+
+
+def harden_profile(
+    profile: DifficultyProfile, source: DifficultyProfile, groups: Sequence[str]
+) -> DifficultyProfile:
+    """``profile`` with the dials of ``groups`` taken back off ``source``.
+
+    The exact inverse of :func:`soften_profile`, applied one mechanic at a time
+    instead of to all of them at once - which is the only way a shortfall can be
+    paid for out of the mechanics that still fit. ``source`` is never gentler
+    than ``profile`` (it is the tier itself, or a tier above it, against a
+    profile relief has already stepped down) and every dial in
+    :data:`DIFFICULTY_PROFILES` is monotone across the tiers, so taking the
+    source's value is always the harder of the two.
+
+    ``kinds`` and ``label`` are untouched, exactly as in :func:`soften_profile`:
+    this changes how hard the mechanics bite, never which ones the level carries.
+    """
+    dials = {
+        dial: getattr(source, dial)
+        for group, fields in CLIMB_ORDER
+        if group in groups
+        for dial in fields
+    }
+    return replace(profile, **dials) if dials else profile
+
+
+def unbury_profile(profile: DifficultyProfile) -> DifficultyProfile:
+    """``profile`` with the burial dials alone taken down to Easy's settings.
+
+    :data:`BURIAL_GROUPS` says which those are and why. Only the *forms* move -
+    how much is hidden, how far from the front row the wanted box may sit, how
+    deep a queue is buried - never a count: the tunnels the picture cannot be
+    laid out without are still planted, they just hand each box over when it is
+    asked for. Which mechanics the level carries stays :class:`ObstaclePlan`'s
+    decision here exactly as it is everywhere else.
+
+    Applied last in :func:`build_obstacle_layer`, after the form has been
+    softened *and* after any climb rung has been taken back, so this is a floor
+    rather than one more voice in the argument: nothing downstream can bury the
+    level again.
+    """
+    easy = DIFFICULTY_PROFILES[int(LevelDifficulty.Easy)]
+    return replace(
+        profile,
+        **{
+            dial: getattr(easy, dial)
+            for group in BURIAL_GROUPS
+            for dial in DIFFICULTY_DIALS[group]
+        },
+    )
+
+
+@dataclass(frozen=True)
+class DifficultyClimb:
+    """Stage 12b: obstacles hardened until the level adds up to the picture's tier.
+
+    Stages 6-12 build the level the tier describes, and :func:`relieve_obstacles`
+    steps that build down until the conveyor stops refusing it. Neither ever
+    asked the question the picture actually posed: taken *as a whole*, does the
+    level come out at the difficulty the picture was read as? A Hard picture
+    relieved two tiers carries every mechanic Hard bought, set the way Easy would
+    set them, and ships wearing a Hard label.
+
+    So the sum is measured (:func:`score_layer`) and then closed. One mechanic at
+    a time is taken back to its tier's own setting, cheapest on the conveyor
+    first, and the layer is rebuilt and re-scored. A rung is kept only if the
+    rebuild is playable *and* the total actually went up - which is what keeps
+    this from simply undoing relief: relief stepped down because the belt was
+    refusing something, and a rung the belt still refuses comes back trimmed by
+    those same checks, scores no higher and is dropped on the spot. What the
+    climb buys back is the difficulty relief overpaid, spent on the mechanics
+    the picture can afford.
+
+    If every rung at the tier's own setting is spent and the level is still
+    short, the second lap reaches one tier *above* the target for the dials that
+    did land. That is the sum being taken seriously: a mechanic the grid could
+    not carry gets paid for by one it can, rather than by relabelling the level.
+
+    This is the mirror of :class:`ObstacleRelief` and reads the same way: relief
+    is the conversation on the way down, ``tried`` is the one on the way back up.
+    """
+
+    target: int = int(LevelDifficulty.Easy)
+    # The notch before the first rung and after the last one.
+    start: float = 0.0
+    final: float = 0.0
+    # (group, the tier its dials were taken from, what happened), in order tried.
+    tried: tuple[tuple[str, int, str], ...] = ()
+    # The groups whose rung was kept, in the order they were added.
+    added: tuple[str, ...] = ()
+    reached: bool = True
+    enabled: bool = True
+
+    @property
+    def gained(self) -> float:
+        return self.final - self.start
+
+    @property
+    def climbed(self) -> bool:
+        return bool(self.added)
+
+    @property
+    def refused(self) -> tuple[tuple[str, str], ...]:
+        """The rungs that were tried and did not stick, with the reason."""
+        return tuple((group, why) for group, _, why in self.tried if group not in self.added)
+
+
+def climb_sources(
+    top: int, *, difficulty: int, tier_profile: DifficultyProfile, options: AutoGenOptions
+) -> tuple[int, ...]:
+    """The tiers a climb takes dials from, gentlest first.
+
+    ``top`` is :attr:`ObstacleRelief.top`, the form the designer asked for, and
+    it is the ceiling rather than ``difficulty`` on purpose. Relief steps the
+    forms down for two quite different reasons and only one of them is a
+    shortfall: :attr:`ObstacleRelief.steps` is the belt refusing to pay, which is
+    what the climb exists to buy back, while :attr:`ObstacleRelief.eased` is the
+    designer asking for the gentler build of this tier. Climbing past ``top``
+    would undo the second one, i.e. overrule the very knob that was set.
+
+    The second lap reaches one tier *above* that, and only when nobody asked for
+    the shortfall at all. A mechanic the grid or the belt could not carry is fair
+    to pay for out of another one - that is what makes this a sum - but a
+    mechanic the designer switched off by hand is not a shortfall to make up.
+    Cranking Hidden to SuperHard's share because somebody unticked the wall is
+    the tool overruling them, so a run with anything turned off, or with the
+    forms deliberately eased, gets one lap and a report saying how far short it
+    came. :func:`designer_choice` is the same reading
+    :func:`plan_obstacle_kinds` gates on, so the two cannot disagree.
+
+    Two laps is the ceiling either way. A third has little left to offer - by
+    then every dial the grid can carry is already set above the target's own -
+    and each lap costs one full rebuild per mechanic.
+    """
+    if top < difficulty or any(
+        designer_choice(kind, options) is False
+        for kind in tier_profile.kinds + tier_profile.lock_kinds
+    ):
+        return (top,)
+    return tuple(range(top, min(int(LevelDifficulty.SuperHard), top + 1) + 1))
+
+
+def climb_obstacles(
+    *,
+    board: BoardState,
+    solution: Solution,
+    scan: PictureScan,
+    options: AutoGenOptions,
+    tier_profile: DifficultyProfile,
+    plan: ObstaclePlan,
+    difficulty: int,
+    rules: GameRules,
+    seed: int,
+    layer: ObstacleLayer,
+    top: int,
+    bury_easy: bool = False,
+) -> tuple[ObstacleLayer, LevelDifficultyScore, DifficultyClimb]:
+    """Harden the layer, one mechanic at a time, until it scores its target tier.
+
+    Returns the layer that shipped, its score, and the record of the climb. The
+    layer handed in is the floor: a climb that buys nothing returns it unchanged,
+    so this can never make a level less playable than relief left it.
+
+    ``top`` is the hardest form the designer asked for - see
+    :func:`climb_sources` - and no dial is ever taken past it on the first lap.
+
+    ``bury_easy`` is the picture that cannot be won on its own belt, and this is
+    the half of it that *adds*: the burial is floored at Easy and stays there, so
+    the shortfall that floor leaves is made up out of the obstacles laid on top -
+    a wall, an arrow, a lock - which is how such a level keeps its content
+    instead of shipping bare. The three burial rungs are skipped rather than
+    tried, because :func:`unbury_profile` runs after the climb and would undo
+    them: attempting one costs a full rebuild and can only score the same.
+    """
+    score = score_layer(layer, target=difficulty)
+    if score.reached or not options.difficulty_climb:
+        return (
+            layer,
+            score,
+            DifficultyClimb(
+                target=difficulty,
+                start=score.notch,
+                final=score.notch,
+                reached=score.reached,
+                enabled=options.difficulty_climb,
+            ),
+        )
+
+    best_layer, best = layer, score
+    kept: list[str] = []
+    tried: list[tuple[str, int, str]] = []
+    for source in climb_sources(
+        top, difficulty=difficulty, tier_profile=tier_profile, options=options
+    ):
+        for group, _ in CLIMB_ORDER:
+            if group in kept:
+                continue
+            if bury_easy and group in BURIAL_GROUPS:
+                tried.append(
+                    (group, source, "tranh không thắng được nên chôn box giữ ở mức dễ")
+                )
+                continue
+            # A rung for a mechanic the budget never bought cannot help: every
+            # dial behind it is read through `plan.has`, so hardening it changes
+            # nothing and only costs a rebuild. The two groups that are not
+            # mechanics - the scramble and the lock timing - have no plan to ask.
+            if group in ALL_OBSTACLE_KINDS and not plan.has(group):
+                tried.append((group, source, "level này không mua loại đó"))
+                continue
+            attempt = build_obstacle_layer(
+                board=board,
+                solution=solution,
+                scan=scan,
+                options=options,
+                tier_profile=tier_profile,
+                plan=plan,
+                difficulty=difficulty,
+                # The form relief settled on stays the floor: the climb lifts
+                # single dials off it, it does not re-run the ladder.
+                form=layer.form,
+                rules=rules,
+                seed=seed,
+                climb=tuple(kept + [group]),
+                climb_from=source,
+                bury_easy=bury_easy,
+            )
+            if not attempt.shippable:
+                tried.append((group, source, "lưới không chơi được: " + "; ".join(attempt.faults)))
+                continue
+            trial = score_layer(attempt, target=difficulty)
+            # The belt gets the last word here too, measured rather than asked: a
+            # rung the conveyor cannot pay for comes back trimmed by the same
+            # checks `ObstacleLayer.cut` reads, so it scores no higher than what
+            # is already kept and is dropped.
+            if trial.raw <= best.raw + 1e-9:
+                tried.append((group, source, "băng không chịu, điểm không tăng"))
+                continue
+            gain = trial.notch - best.notch
+            kept.append(group)
+            best_layer, best = attempt, trial
+            tried.append((group, source, f"+{gain:.2f} nấc → {trial.notch:.2f}"))
+            if best.reached:
+                break
+        if best.reached:
+            break
+    return (
+        best_layer,
+        best,
+        DifficultyClimb(
+            target=difficulty,
+            start=score.notch,
+            final=best.notch,
+            tried=tuple(tried),
+            added=tuple(kept),
+            reached=best.reached,
+            enabled=True,
+        ),
+    )
 
 
 @dataclass
@@ -1630,6 +2448,9 @@ class AutoGenResult:
     # The measurement the slabs were sized and timed from: whole boxes of belt
     # still free at the picture's tightest moment.
     lock_room: int = 0
+    # The per-colour read both locks were placed from, before either was placed:
+    # where the frontier asks for each colour and how many balls of it exist.
+    color_supply: dict[int, "ColorSupply"] = field(default_factory=dict)
     # How many boxes the level actually offers at each tap. This is the only
     # number here that the *obstacles* move: `metrics` walks the bare walkthrough
     # and so describes the picture, whatever is laid on the grid afterwards.
@@ -1653,6 +2474,16 @@ class AutoGenResult:
     # How hard each of them was set, and the profile that came out of it - which
     # is not DIFFICULTY_PROFILES[difficulty] when the picture forced a step down.
     obstacle_relief: ObstacleRelief = field(default_factory=ObstacleRelief)
+    # Stage 12b: what the level was measured to add up to, taken over the buried
+    # boxes and every obstacle together, and the rungs the climb spent closing
+    # the gap to `difficulty`. `score.target` is that target; `score.notch` is
+    # what came out, on the same 0-3 line.
+    score: LevelDifficultyScore = field(default_factory=LevelDifficultyScore)
+    climb: DifficultyClimb = field(default_factory=DifficultyClimb)
+    # What the picture itself read as. Read on every run, not only the ones that
+    # asked for it: a designer who typed their own tier still wants to know what
+    # the picture would have said.
+    rating: PictureRating = field(default_factory=PictureRating)
     profile: DifficultyProfile = field(
         default_factory=lambda: DIFFICULTY_PROFILES[int(LevelDifficulty.Easy)]
     )
@@ -1706,6 +2537,17 @@ class AutoGenResult:
     def valid(self) -> bool:
         """Does the generated level pass every rule LevelValidator enforces?"""
         return not self.validation_errors
+
+    @property
+    def difficulty_matched(self) -> bool:
+        """Does the level add up to the difficulty the picture was read as?
+
+        A third question, beside `winnable` and `valid`, and the only one of the
+        three about the *design* rather than about correctness: a level can win,
+        pass every file rule, and still play two tiers gentler than the tier it
+        ships as.
+        """
+        return self.score.reached
 
     @property
     def locked_balls(self) -> int:
@@ -2385,6 +3227,35 @@ def _tunnel_order(
     return sorted(slots, key=lambda slot: (-slot[1], -abs(slot[0] - centre), slot[0]))
 
 
+def tunnels_can_release(
+    chosen: list[tuple[int, int]], cols: int, rows: int
+) -> bool:
+    """Does every tunnel here still have a neighbour that could hold a box?
+
+    A tunnel hands its queue out through one side, and that side has to be a real
+    box: a wall never opens and an emptied tunnel stays on the grid as one, so a
+    mouth aimed at either is sealed for the whole level. :func:`tunnel_directions`
+    keeps the best side a tunnel has and :func:`sealed_tunnel_mouths` then fails
+    the layout - but that is a fault the layout can *avoid* rather than discover,
+    by simply not parking a tunnel where it walls another one in.
+
+    Which is exactly what used to happen to an overflowing picture. The back row
+    fills with tunnels, the next tunnel goes in the row in front of it, and the
+    tunnel behind that slot now has nothing but tunnels on every side: a picture
+    of 81 boxes on a 64-slot lattice laid nine tunnels, sealed the corner one and
+    refused the whole level. Skipping the candidate instead sends the search on
+    to the next row but one, where the row between them is still boxes and every
+    mouth opens.
+    """
+    taken = set(chosen)
+    return all(
+        any(
+            neighbour not in taken for neighbour in slot_neighbours(slot, cols, rows)
+        )
+        for slot in chosen
+    )
+
+
 def _tunnel_slots(
     slots: list[tuple[int, int]],
     count: int,
@@ -2395,27 +3266,50 @@ def _tunnel_slots(
 ) -> list[tuple[int, int]]:
     """Park ``count`` tunnels, in the order ``placement`` prefers.
 
-    Every pick is checked against :func:`layout_is_open` first. A tunnel is a
-    permanent hole, so once it moves off the back edge it can seal a box away
-    from every approach - and a level with an unreachable box is not a harder
-    level, it is an unplayable one. Candidates that would do that are skipped.
+    Every pick is checked twice, against the two ways a tunnel can break a
+    layout that no replay would notice:
 
-    A placement that cannot seat them all falls back to the back rows for the
-    rest rather than failing the run: the position is a flavour of the level, not
-    a promise worth losing the level over.
+    * :func:`layout_is_open` - a tunnel is a permanent hole, so once it moves off
+      the back edge it can seal a *box* away from every approach, and a level
+      with an unreachable box is not a harder level, it is an unplayable one.
+    * :func:`tunnels_can_release` - a tunnel walled in by other tunnels has no
+      box to hand its own queue to, so the boxes inside it never come out.
+
+    Candidates failing either are skipped, which is what makes the back rows fill
+    in alternating order once one of them is full: a solid row of tunnels needs
+    the row in front of it to stay boxes, so the next tunnel goes one row further
+    in.
+
+    Both checks are **preferences, not vetoes**. A placement that cannot seat
+    them all falls back to the back rows, and then to seating them anywhere at
+    all, rather than failing the run: the position is a flavour of the level and
+    a free mouth is a property of a good one, but neither is worth losing the
+    level over. A lattice too cramped to give every tunnel a box - three slots
+    asked for two tunnels, say - then lands a sealed mouth, which
+    :func:`sealed_tunnel_mouths` reports as a fault and the relief ladder answers
+    by stepping the form down or shipping the bare base grid. That is the path
+    that already existed for it, and it degrades where raising here would not.
     """
     if count <= 0:
         return []
     chosen: list[tuple[int, int]] = []
-    for order in (_tunnel_order(slots, placement, rng), _tunnel_order(slots, "back", rng)):
-        for slot in order:
+    orders = (_tunnel_order(slots, placement, rng), _tunnel_order(slots, "back", rng))
+    # Strict first, so a lattice with room to keep every mouth free does. Only a
+    # lattice that cannot is allowed to seat a tunnel that walls another one in.
+    for free_mouths in (True, False):
+        for order in orders:
+            for slot in order:
+                if len(chosen) >= count:
+                    break
+                if slot in chosen:
+                    continue
+                if not layout_is_open(cols, rows, [], chosen + [slot]):
+                    continue
+                if free_mouths and not tunnels_can_release(chosen + [slot], cols, rows):
+                    continue
+                chosen.append(slot)
             if len(chosen) >= count:
                 break
-            if slot in chosen:
-                continue
-            if not layout_is_open(cols, rows, [], chosen + [slot]):
-                continue
-            chosen.append(slot)
         if len(chosen) >= count:
             break
     if len(chosen) < count:  # pragma: no cover - plan_tunnels keeps a slot per tunnel
@@ -3276,6 +4170,31 @@ def lock_target(band: tuple[float, float] | float, total: int, rng: random.Rando
     return max(0, round(share * total))
 
 
+def lock_count(target: int, ceiling: int, window: int, rounding: str) -> int:
+    """The number to write: as late as the tier asked, as tight as it demands.
+
+    ``target`` is where in the picture the tier wants this lock to open, and
+    ``ceiling`` is the latest it may open at all and still be safe. Honouring
+    the target alone is right when the two are close, and decoration when they
+    are not: a lock that lifts at 29 on a box the winning line does not want
+    until 126 has already been cleared by the time it could have cost anybody
+    anything. The obstacle is on the grid and does nothing.
+
+    ``lock_window`` is the tier's statement of how close is close enough, so
+    when the gap is wider than that the count is lifted toward the ceiling until
+    the gap *is* the window. The tier's share then reads as a floor - "no earlier
+    than this" - rather than as an exact mark, which is the reading that keeps
+    the mechanic honest on a grid whose boxes do not happen to fall where the
+    band wanted them.
+
+    ``ceiling`` is still never crossed, and the value is still rounded *down*,
+    so nothing about the safety of the number changes - only the point of it.
+    """
+    if ceiling < 1:
+        return 0
+    return round_lock(min(ceiling, max(target, ceiling - max(0, window))), rounding)
+
+
 def plan_frozen_count(
     surface_boxes: int, options: AutoGenOptions, profile: DifficultyProfile
 ) -> int:
@@ -3291,6 +4210,28 @@ def plan_frozen_count(
 def block_span_for(room: int, profile: DifficultyProfile) -> tuple[int, int]:
     """How big one slab is, in box slots, read off the room the picture leaves."""
     return BLOCK_WIDE_SPAN if room >= BLOCK_WIDE_ROOM else profile.block_span
+
+
+def block_span_ladder(room: int, profile: DifficultyProfile) -> list[tuple[int, int]]:
+    """The slab sizes to try, biggest first, down to a pair.
+
+    A slab needs a *solid* rectangle of the lattice, and walls and tunnel mouths
+    cut the lattice into pieces. On a fragmented grid there is no 2x2 of real
+    boxes anywhere - measured on a 24x24 picture, SuperHard found none at all in
+    13 of 15 seeds - and the run then bought ``LargeBlock`` and shipped nothing.
+    That is a mechanic *removed*, not a mechanic dosed down, and removing one is
+    the budget's job rather than the geometry's.
+
+    So the size steps down until one fits, the way every other dose in here is
+    relieved rather than dropped. The last rung is a pair, either way up, which
+    is still the thing a slab is and the thing a Frozen box is not: two boxes
+    behind one counter, opaque until it lifts, lifting together.
+    """
+    ladder = [block_span_for(room, profile)]
+    for span in (profile.block_span, (2, 2), (2, 1), (1, 2)):
+        if span not in ladder:
+            ladder.append(span)
+    return ladder
 
 
 def block_room_scale(room: int) -> float:
@@ -3385,6 +4326,142 @@ class Slab:
         return max(0, self.ceiling - self.count)
 
 
+@dataclass(frozen=True)
+class ColorSupply:
+    """What one colour can pay for, read off the *picture* rather than a play order.
+
+    ``wanted`` is every pixel number at which the frontier asks for this colour,
+    in order, and ``balls`` is how many balls of it the whole grid holds. Those
+    two facts answer the only question a progress lock has to settle before it
+    is written: shut this many balls of this colour away, and the picture stops
+    dead at *which* pixel.
+    """
+
+    color: int
+    wanted: tuple[int, ...]
+    balls: int
+
+    @property
+    def pixels(self) -> int:
+        return len(self.wanted)
+
+
+def read_color_supply(
+    sequence: Sequence[int], order: list[BoxSpec]
+) -> dict[int, ColorSupply]:
+    """Where the picture asks for each colour, and how many balls of it exist.
+
+    This is the read the two progress locks are placed from, and it is done
+    before any lock is chosen. Only the frontier colour can be spent, so a box
+    clears pixels at the moments its own colour comes up and at no others - and
+    that list of moments is a property of the picture alone, the same for every
+    order the player might tap in.
+    """
+    wanted: dict[int, list[int]] = {}
+    for pixel, color in enumerate(sequence):
+        wanted.setdefault(color, []).append(pixel)
+    balls: Counter[int] = Counter()
+    for spec in order:
+        balls[spec.color] += spec.size
+    return {
+        color: ColorSupply(color, tuple(spots), balls.get(color, 0))
+        for color, spots in wanted.items()
+    }
+
+
+def lock_reach(
+    supply: dict[int, ColorSupply],
+    order: list[BoxSpec],
+    shut: dict[int, int],
+    candidate: Iterable[int],
+    total: int,
+) -> int:
+    """Highest number a lock over ``candidate`` can carry and still be opened.
+
+    ``progress`` bounds a lock by the one order the run certified. This bounds
+    it by the *picture*, which is a far stronger statement: the picture is paid
+    for in one direction, so the ``n``-th pixel of a colour cannot clear until
+    ``n`` balls of that colour have been poured. Hold some of them back behind a
+    counter and the picture stops at the first pixel it can no longer pay for -
+    and because both locks open on progress, a picture that stops there never
+    opens anything again, whatever order the player tapped in.
+
+    So for each colour under the lock: walk the pixels the picture asks that
+    colour for, subtract the balls already shut away by locks written earlier,
+    subtract the balls this lock would shut, and the first pixel left unpayable
+    is the ceiling. ``total`` - the whole picture - means nothing constrains it.
+    """
+    adding: Counter[int] = Counter()
+    for index in candidate:
+        adding[order[index].color] += order[index].size
+    held: dict[int, list[tuple[int, int]]] = {}
+    for index, count in shut.items():
+        if count > 0:
+            held.setdefault(order[index].color, []).append((count, order[index].size))
+
+    reach = total
+    for color, balls in adding.items():
+        info = supply.get(color)
+        if info is None:
+            continue
+        earlier = held.get(color, ())
+        for position, pixel in enumerate(info.wanted):
+            # Locks written earlier are only in the way while they are still
+            # shut, which is why the comparison is against this pixel and not
+            # against the lock being written.
+            already = sum(size for count, size in earlier if count > pixel)
+            if info.balls - already - balls < position + 1:
+                reach = min(reach, pixel)
+                break
+    return reach
+
+
+def locks_open(
+    sequence: Sequence[int],
+    order: list[BoxSpec],
+    frozen: list["BoxLock"],
+    slabs: list["Slab"],
+) -> list[str]:
+    """Every pixel a locked picture cannot pay for in *any* tap order. Empty passes.
+
+    :func:`locks_hold` proves the certified line never waits on a lock. This
+    proves nobody else can either: a box pours nothing until its own counter has
+    opened, so the balls that can pay pixel ``q`` are the ones on boxes numbered
+    at most ``q``. Walk the picture once, compare what it has asked of each
+    colour against what has been let out, and the first place demand passes
+    supply is a pixel no order gets past.
+
+    Derived from the same numbers the planners are bounded by, so like
+    ``locks_hold`` this can only fail on a bug - which is why it runs.
+    """
+    shut: dict[int, int] = {}
+    for lock in frozen:
+        shut[lock.order_index] = max(shut.get(lock.order_index, 0), lock.count)
+    for slab in slabs:
+        for index in slab.covered:
+            shut[index] = max(shut.get(index, 0), slab.count)
+    if not shut:
+        return []
+
+    opened: dict[int, list[tuple[int, int]]] = {}
+    for index, spec in enumerate(order):
+        opened.setdefault(spec.color, []).append((shut.get(index, 0), spec.size))
+
+    asked: Counter[int] = Counter()
+    for pixel, color in enumerate(sequence):
+        asked[color] += 1
+        poured = sum(size for count, size in opened.get(color, ()) if count <= pixel)
+        if asked[color] > poured:
+            names = sorted(
+                count for count, _ in opened.get(color, ()) if count > pixel
+            )
+            return [
+                f"tranh dừng ở pixel {pixel} (màu {color}): cần {asked[color]} bóng, "
+                f"chỉ có {poured} bóng đã mở khoá — khoá còn đóng: {names}"
+            ]
+    return []
+
+
 def _pick_lock(
     available: list[tuple[int, int]], target: int, window: int
 ) -> tuple[int, int] | None:
@@ -3415,7 +4492,9 @@ def _pick_lock(
 def plan_frozen(
     placements: list[Placement],
     order: list[BoxSpec],
+    supply: dict[int, ColorSupply],
     progress: dict[int, int],
+    shut: dict[int, int],
     wanted: int,
     total: int,
     profile: DifficultyProfile,
@@ -3425,20 +4504,28 @@ def plan_frozen(
 ) -> list[BoxLock]:
     """Pick which surface boxes freeze, and at what number.
 
-    Two rules keep a Frozen box from being a dead level rather than a hard one,
-    and the first matters far more than it looks.
+    Three rules keep a Frozen box from being a dead level rather than a hard
+    one, and they are applied in that order: what the *picture* can pay for
+    decides which boxes are even eligible, then which of them is picked, and
+    only then the number written on it.
 
-    The picture is cleared by a single frontier, so if the colour the frontier
-    wants has only one box left and that box is frozen, nothing can advance -
-    and because the lock opens on *progress*, nothing advancing means the lock
-    never opens either. That is not difficulty, it is an unwinnable file. So a
-    lock only ever goes on a colour that has another box to serve the frontier
-    while it is shut.
+    **The colour first.** The picture is cleared by a single frontier, so a box
+    clears pixels at the moments its own colour comes up and at no others. If
+    the colour the frontier wants has only one box left and that box is frozen,
+    nothing can advance - and because the lock opens on *progress*, nothing
+    advancing means the lock never opens either. That is not difficulty, it is
+    an unwinnable file. So a lock only ever goes on a colour that still has an
+    unlocked box to serve the frontier while it is shut, and ``shut`` is what
+    makes that count honest: a spare already sitting under a slab, or frozen by
+    an earlier round of this loop, is not a spare.
 
-    The second is the ceiling: ``progress`` says how much of the picture is gone
-    when the winning line reaches this box, and the count is written at most
-    ``lock_margin`` below that. The certified line therefore never waits on a
-    lock, and every line that wanted to tap the box sooner is the difficulty.
+    **Then the ceiling**, which is two bounds at once and the tighter wins:
+
+    * ``progress`` - how much of the picture is gone when the winning line
+      reaches this box. Below it, the certified line never waits on a lock.
+    * :func:`lock_reach` - how far the picture can be paid for *at all* with
+      this box's balls held back. Below it, no tap order can stall, not just
+      the certified one.
 
     Boxes already tied into a LinkedContainer are left out entirely: the
     validator makes both halves of a pair carry identical effects, so freezing
@@ -3447,32 +4534,51 @@ def plan_frozen(
     """
     if wanted <= 0:
         return []
-    per_color = Counter(spec.color for spec in order)
     margin = max(0, options.lock_margin)
     window = round(profile.lock_window * total)
+    # Boxes of each colour that nothing has shut away yet. Decremented as this
+    # loop writes locks, so the "another box of its colour" rule is measured
+    # against what is actually still tappable rather than against a head count.
+    free_boxes = Counter(
+        spec.color for index, spec in enumerate(order) if not shut.get(index, 0)
+    )
+    shut = dict(shut)
+
+    def ceiling_for(index: int) -> int:
+        reach = lock_reach(supply, order, shut, (index,), total)
+        return min(progress.get(index, 0), reach) - margin
 
     pool: dict[int, Placement] = {}
     for placement in placements:
         index = placement.order_index
-        if index in banned or per_color[placement.spec.color] < 2:
+        if index in banned or free_boxes[placement.spec.color] < 2:
             continue
-        ceiling = progress.get(index, 0) - margin
-        if ceiling < 1:
+        if ceiling_for(index) < 1:
             continue
         pool[index] = placement
 
     locks: list[BoxLock] = []
     for _ in range(min(wanted, len(pool))):
         target = lock_target(profile.frozen_at, total, rng)
-        available = [(progress[index] - margin, index) for index in pool]
+        # Recomputed every round: the lock written last round holds balls back
+        # too, so the colour it sat on may no longer have a spare and the boxes
+        # sharing that colour may no longer reach as far as they did.
+        available = [
+            (ceiling, index)
+            for index, placement in pool.items()
+            if free_boxes[placement.spec.color] >= 2
+            and (ceiling := ceiling_for(index)) >= 1
+        ]
         chosen = _pick_lock(available, target, window)
         if chosen is None:
             break
         ceiling, index = chosen
-        count = round_lock(min(target, ceiling), options.lock_rounding)
+        count = lock_count(target, ceiling, window, options.lock_rounding)
         placement = pool.pop(index)
         if count < 1:
             continue
+        shut[index] = count
+        free_boxes[placement.spec.color] -= 1
         locks.append(
             BoxLock(
                 order_index=index,
@@ -3511,6 +4617,8 @@ def slab_rectangles(
 
 def plan_slabs(
     placements: list[Placement],
+    order: list[BoxSpec],
+    supply: dict[int, ColorSupply],
     progress: dict[int, int],
     cols: int,
     rows: int,
@@ -3562,15 +4670,48 @@ def plan_slabs(
     # Size and number both come off the room the picture leaves - see
     # BLOCK_WIDE_ROOM. A slab is opaque, so a wide one on a tight picture is a
     # ninth of the grid the player cannot even read the colour of.
-    span_x, span_y = block_span_for(room, profile)
     scale = block_room_scale(room)
     margin = max(0, options.lock_margin)
     window = round(profile.lock_window * total)
     shares = profile.block_at or ((0.3,) * wanted)
 
+    def rectangles(span: tuple[int, int]) -> list[tuple[int, int, tuple[int, ...]]]:
+        """Rectangles of this size a slab could actually be laid on, filters and all."""
+        wide, tall = span
+        keep: list[tuple[int, int, tuple[int, ...]]] = []
+        for slot_x, slot_y, covered in slab_rectangles(placements, wide, tall):
+            cells = [(slot_x + dx, slot_y + dy) for dy in range(tall) for dx in range(wide)]
+            if any(index in banned for index in covered):
+                continue
+            inside = set(covered)
+            if any(partners[index] not in inside for index in covered if index in partners):
+                continue
+            if not layout_is_open(cols, rows, list(wall_slots) + cells, tunnel_slots):
+                continue
+            wanted_at = min(progress.get(index, 0) for index in covered)
+            reach = lock_reach(supply, order, {}, covered, total)
+            if min(wanted_at, reach) - margin < 1:
+                continue
+            keep.append((slot_x, slot_y, covered))
+        return keep
+
+    # Biggest size that this grid has anywhere to put one. Stepping down beats
+    # shipping nothing: see `block_span_ladder`.
+    span_x, span_y = 0, 0
+    candidates: list[tuple[int, int, tuple[int, ...]]] = []
+    for span in block_span_ladder(room, profile):
+        candidates = rectangles(span)
+        if candidates:
+            span_x, span_y = span
+            break
+    if not candidates:
+        return []
+
     taken: set[tuple[int, int]] = set()
     slabs: list[Slab] = []
-    candidates = slab_rectangles(placements, span_x, span_y)
+    # What each slab already laid holds back, so the next one is measured
+    # against a picture that is already short of those balls.
+    shut: dict[int, int] = {}
     for round_index in range(wanted):
         share = shares[min(round_index, len(shares) - 1)] * scale
         target = lock_target(share, total, rng)
@@ -3597,7 +4738,15 @@ def plan_slabs(
                 continue
             if not layout_is_open(cols, rows, list(wall_slots) + cells, tunnel_slots):
                 continue
-            ceiling = min(progress.get(index, 0) for index in covered) - margin
+            # Two bounds, tighter wins. The winning line has to be able to tap
+            # the *earliest* box under the slab by the time it wants it, and the
+            # picture has to be payable up to the number with every colour under
+            # the slab held back - the second bound holds for any tap order, not
+            # only the certified one, which is what a slab needs: it takes four
+            # boxes out at once, so it is the lock most able to starve a colour.
+            wanted_at = min(progress.get(index, 0) for index in covered)
+            reach = lock_reach(supply, order, shut, covered, total)
+            ceiling = min(wanted_at, reach) - margin
             if ceiling < 1:
                 continue
             key = slot_y * cols + slot_x
@@ -3608,12 +4757,14 @@ def plan_slabs(
             break
         ceiling, key = chosen
         slot_x, slot_y, covered = lookup[key]
-        count = round_lock(min(target, ceiling), options.lock_rounding)
+        count = lock_count(target, ceiling, window, options.lock_rounding)
         if count < 1:
             continue
         taken.update(
             (slot_x + dx, slot_y + dy) for dy in range(span_y) for dx in range(span_x)
         )
+        for index in covered:
+            shut[index] = count
         slabs.append(
             Slab(
                 slot_x=slot_x,
@@ -3830,9 +4981,11 @@ def jam_headline(result: "AutoGenResult") -> str:
     bar - and it has to carry the cell, because that is the part a designer acts
     on.
 
-    A validator error outranks a jam. A jam is the picture asking for a wider
-    conveyor, which is a decision for the designer; a validator error on a
-    generated grid is a broken file, and it must never be the quieter of the two.
+    A validator error outranks a jam, and a jam outranks the level coming out
+    gentler than its tier. That is the order the three of them can be acted on
+    in: a validator error is a broken file and never the quieter of the three, a
+    jam is the picture asking for a wider conveyor, and a level short of its tier
+    still works - it is just not the level that was asked for.
     """
     if result.validation_errors:
         first = result.validation_errors[0].message
@@ -3843,7 +4996,21 @@ def jam_headline(result: "AutoGenResult") -> str:
             + " — đây là lỗi của Auto Gen Box, xem phần dưới."
         )
     if result.jam is None:
-        return ""
+        if result.score.reached:
+            return ""
+        return (
+            f"CHỈ ĐẠT {result.score.label} ({result.score.notch:.2f}/3) so với mức "
+            f"{result.score.target_label} mà tranh đọc ra — thiếu"
+            f" {result.score.shortfall:.2f} nấc"
+            + (
+                f", đã siết {len(result.climb.added)} loại obstacle mà vẫn không tới"
+                if result.climb.climbed
+                else ", tranh không còn chỗ cho obstacle nào nữa"
+                if result.climb.enabled
+                else ", tự tăng độ khó đang tắt"
+            )
+            + ". Level vẫn chơi được — xem phần dưới."
+        )
     cell = result.scan.cell_at(result.jam.at)
     return (
         f"CHƯA THẮNG ĐƯỢC với piece={result.belt_slots // BALLS_PER_BOX}: người chơi kẹt tại"
@@ -3902,7 +5069,7 @@ def format_scan(scan: PictureScan) -> str:
     """
     if not scan.painted:
         return "Chưa có pixel nào được tô — hãy vẽ hoặc import ảnh trước."
-    tier = DIFFICULTY_PROFILES[suggest_difficulty(scan)].label
+    tier = rate_picture(scan).tier_label
     lines = [
         f"{scan.colors} màu, {scan.painted} pixel = {scan.boxes} box x 9 bóng"
         f"   ·   độ khó đọc được: {tier}",
@@ -4064,15 +5231,45 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         if repair.changed:
             scan = scan_picture(grid, belt_slots=belt_slots, box_size=BALLS_PER_BOX)
 
+    # Second pass, and only if the designer asked for it: a picture so shredded
+    # that merging every speck into its own kind was not enough. What is left is
+    # scattered *colour* - a colour spread over thirty three-pixel specks has no
+    # large region of its own to be consolidated beside - so the only move that
+    # helps is giving that colour up. It changes the palette, which is why it is
+    # opt-in and why it runs last.
+    if options.drop_scattered_colors and not scan.demand.wins(belt_slots):
+        repair = drop_scattered_colors(
+            grid,
+            belt_slots=belt_slots,
+            box_size=BALLS_PER_BOX,
+            report=repair if repair.changed else None,
+        )
+        if repair.drops:
+            scan = scan_picture(grid, belt_slots=belt_slots, box_size=BALLS_PER_BOX)
+            if not grid.histogram():  # pragma: no cover - min_colors keeps three
+                raise AutoGenError(
+                    "Dropping the scattered colours left nothing painted."
+                )
+
     scan.deleted = removed
     scan.added = balance.added
     scan.moved = balance.moved
-    difficulty = suggest_difficulty(scan) if options.auto_difficulty else options.difficulty
+    # "Lấy độ khó từ ảnh", in the two steps it always was: rate the picture, then
+    # choose the tier its rating asks for. The rating is kept whole rather than
+    # collapsed into the one number, so the report can say *why* this picture
+    # reads as it does - and it is read either way, because a designer who typed
+    # their own tier still wants to know what the picture would have said.
+    rating = rate_picture(scan)
+    difficulty = rating.tier if options.auto_difficulty else options.difficulty
     # Stepping the scenario down is a decision, not a reaction: the picture says
     # what it reads as and this says how much of that to actually build. Easy is
     # the floor - there is no gentler level to ask for.
     if options.ease_difficulty:
         difficulty = max(int(LevelDifficulty.Easy), difficulty - max(0, options.ease_difficulty))
+    # From here `difficulty` is the **target**: the tier the obstacles are built
+    # up to, and the number the finished level is scored against in stage 12b.
+    # Whether it came off the picture or out of the dialog makes no difference to
+    # anything downstream.
     if difficulty not in DIFFICULTY_PROFILES:  # pragma: no cover - suggest_difficulty is in range
         raise AutoGenError(f"Unsupported difficulty {difficulty}.")
     profile = DIFFICULTY_PROFILES[difficulty]
@@ -4115,6 +5312,14 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         minimum_belt(board, boxes, max_slots=certified_belt, min_slots=scan.demand.peak_balls)
         or certified_belt
     )
+
+    # `jam` is set only when `solve_order` lost on the belt the level *ships* with,
+    # which is the same reading `format_scan` prints as "KHÔNG THỂ THẮNG" above
+    # every knob in the dialog - and it is taken after the repairs, so a picture
+    # the repair pass saved arrives here with no jam and keeps its tier's burial.
+    # Decided once and handed to both stages 12 and 12b, so relief and the climb
+    # cannot disagree about it. See `BURIAL_GROUPS` for why it is worth doing.
+    bury_easy = options.jam_relief and jam is not None
 
     # The picture and the obstacles are two difficulties, and the conveyor is
     # where they add up. `difficulty` was read off the picture, so a hard picture
@@ -4192,7 +5397,41 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         rules=rules,
         seed=seed,
         base=base,
+        bury_easy=bury_easy,
     )
+    # Stage 12b. Two things have decided this level so far and neither of them
+    # ever looked at the sum: the tier said which mechanics, relief said how hard
+    # each one is set. So the sum is read off the finished layer and, when it
+    # comes out under the tier the picture asked for, the mechanics the picture
+    # can still afford are hardened until it gets there. A level that already
+    # scores its target is handed straight back - see `DifficultyClimb`.
+    #
+    # Skipped for a base ship, where there is nothing to harden: every form
+    # faulted, so the level has no mechanic on it to set harder.
+    if relief.base:
+        score = score_layer(layer, target=difficulty)
+        climb = DifficultyClimb(
+            target=difficulty,
+            start=score.notch,
+            final=score.notch,
+            reached=score.reached,
+            enabled=options.difficulty_climb,
+        )
+    else:
+        layer, score, climb = climb_obstacles(
+            board=board,
+            solution=solution,
+            scan=scan,
+            options=options,
+            tier_profile=tier_profile,
+            plan=plan,
+            difficulty=difficulty,
+            rules=rules,
+            seed=seed,
+            layer=layer,
+            top=relief.top,
+            bury_easy=bury_easy,
+        )
     if relief.base:
         # The level went out with no mechanics on it, so the plan has to say that
         # rather than list what the tier bought and never got onto the grid.
@@ -4348,6 +5587,12 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
     late_locks = locks_hold(frozen_locks, slabs, layer.progress, options.lock_margin)
     if late_locks:
         raise AutoGenError("Internal error: " + "; ".join(late_locks))
+    # Same question asked of the picture instead of the certified line: is there
+    # a pixel these counters make unpayable in *every* tap order? A level that
+    # fails this wins in the simulator and stalls for the player.
+    starved = locks_open(board.sequence, solution.order, frozen_locks, slabs)
+    if starved:
+        raise AutoGenError("Internal error: " + "; ".join(starved))
     slab_slots = {slot for slab in slabs for slot in slab.slots}
     if len(slab_slots) != sum(len(slab.slots) for slab in slabs):
         raise AutoGenError("Internal error: two LargeBlock slabs overlap.")
@@ -4427,6 +5672,43 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
             f"cho level là chạy đúng ngay, không phải sinh lại. "
             "Hoặc gom các đốm cùng màu thành mảng dài từ 9 pixel theo thứ tự ăn "
             "(trên xuống, phải qua trái) để bỏ hẳn phần bóng thừa."
+        )
+
+    # The one thing the validator cannot check, because it is about the design
+    # rather than about the file: the level wins, it loads, and it still does not
+    # add up to the tier it ships as. Said here rather than left in the report
+    # body, because a level wearing the wrong label is the kind of thing that
+    # goes unnoticed for a whole batch of levels.
+    if not score.reached:
+        gentlest = sorted(
+            (notch, group) for group, notch in score.groups.items() if notch > 0.0
+        )[:3]
+        warnings.append(
+            f"LEVEL NÀY CHỈ ĐẠT {score.label} ({score.notch:.2f}/3) so với mức "
+            f"{score.target_label} mà tranh đọc ra — thiếu {score.shortfall:.2f} nấc. "
+            + (
+                "Đã thử tăng "
+                + "/".join(
+                    DIFFICULTY_GROUP_LABELS[group] for group, _, _ in climb.tried
+                )
+                + " nhưng "
+                + (
+                    "chỉ kéo lên được đến đây"
+                    if climb.climbed
+                    else "không loại nào tăng được điểm"
+                )
+                + ". "
+                if climb.tried
+                else "Tự tăng độ khó đang tắt. "
+                if not climb.enabled
+                else ""
+            )
+            + "Nhẹ nhất đang là "
+            + ", ".join(
+                f"{DIFFICULTY_GROUP_LABELS[group]} {notch:.2f}" for notch, group in gentlest
+            )
+            + ". Muốn đúng mức thì nới piece cho băng rộng hơn, hoặc gom màu lại "
+            "để tranh chừa chỗ cho obstacle."
         )
 
     # The plan itself heads the report, so only the two ways it can go wrong are
@@ -4577,13 +5859,16 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         )
     # Repainting somebody's artwork is the most intrusive thing in here, so it is
     # spelled out whether it worked or not.
-    if repair.changed:
+    if repair.moves:
         warnings.append(
             "Đã sửa tranh để level chơi được: "
-            + repair_summary(repair)
+            + merge_summary(repair)
+            + ", "
+            + belt_summary(repair)
             + ". Mỗi đốm lẻ được nhập vào màu bên cạnh và trả lại đúng số pixel đó ngay cạnh "
-            "mảng lớn của chính nó, nên số pixel từng màu không đổi và số box sinh ra vẫn y "
-            "nguyên — chỉ thứ tự tranh đòi màu là đổi. Các nước đã sửa: "
+            "mảng lớn của chính nó — riêng bước gom này không bỏ màu nào: số pixel từng màu "
+            "không đổi và số box sinh ra vẫn y nguyên, chỉ thứ tự tranh đòi màu là đổi. "
+            "Các nước đã sửa: "
             + "; ".join(
                 f"{move.pixels} pixel {COLOR_NAMES[ItemColor(move.color)]} ở ô hàng "
                 f"{move.at[0]}, cột {move.at[1]} → {COLOR_NAMES[ItemColor(move.into)]}, "
@@ -4592,28 +5877,88 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
             )
             + ". Bỏ tick 'Sửa tranh cho chơi được' nếu muốn giữ nguyên từng pixel."
         )
-        if not repair.wins:
-            warnings.append(
-                f"Sửa tranh vẫn chưa đủ: băng còn cần {repair.belt_after}/{repair.belt_slots} "
-                "bóng"
-                + (
-                    " và đã hết nước gom (mọi đốm lẻ còn lại đều là mảng cuối của màu đó)"
-                    if repair.exhausted
-                    else " và nước gom tiếp theo không giúp giảm thêm"
-                )
-                + ". Tranh này rắc quá đều — nâng piece hoặc tự gom màu thành mảng dài từ "
-                f"{BALLS_PER_BOX} pixel theo thứ tự ăn."
+    # Said apart from the merges, and in stronger terms, because this is the one
+    # repair that changes what the artwork is *made of*: the palette comes back
+    # shorter and no amount of reading the merge list would reveal that.
+    if repair.drops:
+        gone = [drop for drop in repair.drops if drop.gone]
+        painted = sum(grid.histogram().values())
+        warnings.append(
+            f"Đã bỏ bớt màu vụn để level qua được: {len(repair.drops)} box đốm màu "
+            f"({repair.dropped_pixels}/{painted} pixel = "
+            f"{repair.dropped_pixels / painted:.1%} bức tranh) đã đổi màu. Các nước: "
+            + "; ".join(
+                f"{drop.pixels} pixel {COLOR_NAMES[ItemColor(drop.color)]} ở ô hàng "
+                f"{drop.at[0]}, cột {drop.at[1]} → {COLOR_NAMES[ItemColor(drop.into)]} "
+                f"(mất {drop.runs_removed} mảng vụn"
+                + (", màu này rời khỏi bảng màu" if drop.gone else "")
+                + ")"
+                for drop in repair.drops
             )
-    elif options.repair_picture and jam is not None:
+            + f". Bảng màu còn {len(grid.histogram())} màu"
+            + (
+                " (không mất màu nào — chỉ các đốm vụn bị gom đi, mảng lớn của mọi màu "
+                "giữ nguyên)"
+                if not gone
+                else ": mất "
+                + ", ".join(COLOR_NAMES[ItemColor(drop.color)] for drop in gone)
+                + " vì cả màu đó chỉ có đúng số pixel vừa bị gom"
+            )
+            + ". Mỗi nước bỏ đúng 1 box (9 pixel) — mức nhỏ nhất mà histogram cho phép vì mọi "
+            "màu phải chia hết cho 9 — và chọn box nào hạ băng nhiều nhất, rồi dừng ngay khi "
+            "tranh thắng được. Bỏ tick 'Bỏ màu quá vụn nếu vẫn không qua được' nếu muốn giữ "
+            "nguyên từng pixel và chấp nhận level KẸT."
+        )
+    if repair.changed and not repair.wins:
+        warnings.append(
+            f"Sửa tranh vẫn chưa đủ: băng còn cần {repair.belt_after}/{repair.belt_slots} "
+            "bóng"
+            + (
+                " và đã hết nước gom (mọi đốm lẻ còn lại đều là mảng cuối của màu đó)"
+                if repair.exhausted
+                else " và nước gom tiếp theo không giúp giảm thêm"
+            )
+            + ". Tranh này rắc quá đều — "
+            + (
+                "nâng piece hoặc tự gom màu thành mảng dài từ "
+                f"{BALLS_PER_BOX} pixel theo thứ tự ăn."
+                if options.drop_scattered_colors
+                else "tick 'Bỏ màu quá vụn nếu vẫn không qua được' để tool bỏ bớt màu vụn, "
+                f"hoặc nâng piece, hoặc tự gom màu thành mảng dài từ {BALLS_PER_BOX} pixel "
+                "theo thứ tự ăn."
+            )
+        )
+    elif not repair.changed and options.repair_picture and jam is not None:
         warnings.append(
             "Không sửa được tranh cho chơi được: không có đốm màu lẻ nào gom được mà giảm được "
-            "băng. Tranh này cần piece lớn hơn, hoặc phải gom màu bằng tay."
+            "băng. "
+            + (
+                "Tranh này cần piece lớn hơn, hoặc phải gom màu bằng tay."
+                if options.drop_scattered_colors
+                else "Tick 'Bỏ màu quá vụn nếu vẫn không qua được' để tool bỏ bớt màu vụn, "
+                "hoặc nâng piece, hoặc gom màu bằng tay."
+            )
         )
     if relief.eased:
         warnings.append(
             f"Đã hạ sẵn dạng obstacle {relief.eased} nấc theo yêu cầu, từ {relief.tier_label} "
             f"xuống {relief.top_label}: level vẫn là mức {relief.tier_label} (theme và difficulty "
             f"không đổi) nhưng obstacle được dựng ở dạng của mức {relief.top_label}."
+        )
+    if relief.unburied:
+        gentle, asked = DIFFICULTY_PROFILES[int(LevelDifficulty.Easy)], DIFFICULTY_PROFILES[relief.difficulty]
+        warnings.append(
+            f"Tranh KHÔNG THẮNG ĐƯỢC trên băng của level (piece={scan.piece}, cần"
+            f" piece={scan.required_piece}), nên phần CHÔN BOX đã hạ xuống mức Easy:"
+            f" box ẩn {gentle.hidden_ratio:.0%} thay vì {asked.hidden_ratio:.0%},"
+            f" xếp box kiểu {gentle.scramble} thay vì {asked.scramble}, độ chôn trong"
+            f" tunnel {gentle.dig_window} thay vì {asked.dig_window}."
+            " Băng không cắt được box ẩn (nó không tốn bóng nào) nên không hạ ở đây thì"
+            " level đã kẹt lại còn bị chôn ở mức khó nhất, không ai đọc được."
+            f" Obstacle đặt lên trên vẫn giữ dạng mức {relief.label} và vẫn được thêm vào"
+            " cho tới khi lưới không chơi được nữa, nên level không bị dựng trơ."
+            f" Level vẫn là mức {relief.tier_label} — nâng piece lên"
+            f" {scan.required_piece} rồi gen lại là chôn box trở về đúng mức đó."
         )
     if emptied:
         warnings.append(
@@ -4856,6 +6201,7 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         slabs=slabs,
         slab_dose=slab_count,
         lock_room=layer.lock_room,
+        color_supply=read_color_supply(board.sequence, solution.order),
         choices=choices,
         play_groups=play_groups,
         removed_pixels=removed,
@@ -4879,6 +6225,9 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         repair=repair,
         jam=jam,
         validation=validation,
+        score=score,
+        climb=climb,
+        rating=rating,
         warnings=warnings,
     )
 
@@ -4893,6 +6242,9 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
     metrics = result.metrics
     scan = result.scan
     plan = result.obstacle_plan
+    rating = result.rating
+    score = result.score
+    climb = result.climb
     chosen = " (tự đọc từ ảnh)" if options.auto_difficulty else ""
     lines = []
     if result.jam is not None:
@@ -4916,6 +6268,47 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
             if result.shuffle_attempts > 1
             else ""
         ),
+        f"  đọc từ ảnh: {rating.reason}"
+        + (
+            ""
+            if options.auto_difficulty
+            else f" — không dùng, độ khó lấy từ ô đã chọn ({tier.label})"
+        ),
+        f"Độ khó tổng hợp của level dựng ra: {score.summary}"
+        + ("" if score.reached else f" — THIẾU {score.shortfall:.2f} nấc"),
+        "  cộng từ: "
+        + ", ".join(
+            f"{DIFFICULTY_GROUP_LABELS[group]} {score.groups[group]:.2f}"
+            for group in DIFFICULTY_DIALS
+        ),
+        f"  thang điểm neo vào chính 4 dòng độ khó: "
+        + " < ".join(
+            f"{DIFFICULTY_PROFILES[step].label} {anchor:.1f}"
+            for step, anchor in enumerate(score.anchors)
+        )
+        + f" — level này {score.raw:.1f}",
+        "  tự tăng độ khó: "
+        + (
+            "đã đủ mức ngay từ đầu, không cần thêm"
+            if not climb.tried and climb.reached
+            else "đang tắt"
+            if not climb.enabled
+            else (
+                f"{climb.start:.2f} → {climb.final:.2f} nấc bằng cách siết "
+                + "/".join(DIFFICULTY_GROUP_LABELS[group] for group in climb.added)
+                if climb.climbed
+                else "không loại nào siết thêm được"
+            )
+            + (
+                "; không siết được: "
+                + ", ".join(
+                    f"{DIFFICULTY_GROUP_LABELS[group]} ({why})"
+                    for group, why in climb.refused
+                )
+                if climb.refused
+                else ""
+            )
+        ),
         f"Lưới box gốc (chưa obstacle): THẮNG ĐƯỢC, băng đỉnh {result.base_belt}/"
         f"{result.certified_belt} bóng — {result.base_surface_boxes} box mặt ngoài"
         + (
@@ -4936,6 +6329,13 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
         + (
             f" — đã hạ sẵn {relief.eased} nấc theo yêu cầu (từ {relief.tier_label})"
             if relief.eased
+            else ""
+        )
+        + (
+            f" — riêng chôn box hạ về Easy vì tranh không thắng được trên piece"
+            f"={result.scan.piece} (cần piece={result.scan.required_piece}); obstacle đặt lên"
+            " trên vẫn ở dạng trên"
+            if relief.unburied
             else ""
         )
         + (
@@ -5116,6 +6516,31 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
             lines.append(
                 f"  {result.trimmed_locks} khoá phải hạ số xuống dưới mức của tier: "
                 "đường thắng cần box đằng sau chúng sớm hơn mốc tier đặt ra"
+            )
+        locked_colors = {lock.color for lock in result.frozen} | {
+            spec.color
+            for slab in result.slabs
+            for spec in (result.solution.order[index] for index in slab.covered)
+        }
+        if locked_colors and result.color_supply:
+            lines.append(
+                "  màu bị khoá → pixel tranh cần / bóng trên lưới, box còn tap được: "
+                + ", ".join(
+                    f"{color}: {info.pixels}/{info.balls}, {free} box"
+                    for color in sorted(locked_colors)
+                    if (info := result.color_supply.get(color)) is not None
+                    for free in (
+                        sum(
+                            1
+                            for index, spec in enumerate(result.solution.order)
+                            if spec.color == color
+                            and not any(
+                                lock.order_index == index for lock in result.frozen
+                            )
+                            and not any(index in slab.covered for slab in result.slabs)
+                        ),
+                    )
+                )
             )
     if result.removed_pixels or result.added_pixels or result.moved_pixels:
         lines += [

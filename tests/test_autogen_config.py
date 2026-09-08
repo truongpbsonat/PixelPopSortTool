@@ -45,6 +45,7 @@ def _tuned() -> AutoGenOptions:
         lock_rounding="five",
         shuffle_obstacles=False,
         obstacle_relief=False,
+        jam_relief=False,
         repair_picture=False,
         ease_difficulty=1,
         ease_obstacles=2,

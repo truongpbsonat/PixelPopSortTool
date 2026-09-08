@@ -32,6 +32,12 @@ from PySide6.QtWidgets import (
 from pixel_level_tool.domain.commands import CommandStack
 from pixel_level_tool.domain.enums import EMPTY_COLOR_ID, THEME_ID_LABELS, LevelDifficulty, ThemeId
 from pixel_level_tool.domain.level_models import PixelGridData, PixelLevelData
+from pixel_level_tool.services.autogen_batch import (
+    AutoGenBatchError,
+    BatchSource,
+    BatchSummary,
+    generate_folder,
+)
 from pixel_level_tool.services.autogen_config import (
     AutoGenConfigError,
     load_autogen_config,
@@ -55,7 +61,10 @@ from pixel_level_tool.services.mechanics_batch import scan_mechanics_in_folder
 from pixel_level_tool.services.mechanics_scanner import MechanicsScanner
 from pixel_level_tool.services.recent_files_service import RecentFilesService
 from pixel_level_tool.services.settings_service import SettingsService
+from pixel_level_tool.ui.auto_gen_folder_window import AutoGenFolderWindow
+from pixel_level_tool.ui.dialogs.auto_gen_batch_report_dialog import AutoGenBatchReportDialog
 from pixel_level_tool.ui.dialogs.auto_gen_box_dialog import AutoGenBoxDialog
+from pixel_level_tool.ui.dialogs.auto_gen_folder_dialog import AutoGenFolderDialog
 from pixel_level_tool.ui.dialogs.image_import_dialog import ImageImportDialog
 from pixel_level_tool.ui.dialogs.new_level_dialog import NewLevelDialog
 from pixel_level_tool.ui.dialogs.resize_grid_dialog import ResizeGridDialog
@@ -116,6 +125,10 @@ class MainWindow(QMainWindow):
         self.convert_file_action = QAction("Convert File", self)
         self.convert_all_action = QAction("Convert All", self)
         self.scan_mechanics_action = QAction("Scan Mechanics In Folder", self)
+        self.gen_folder_quick_action = QAction("Gen Folder (nhanh)", self)
+        self.gen_folder_quick_action.setToolTip(
+            "Sinh box cho cả folder trong một lần hỏi - không mở cửa sổ Auto Gen Folder"
+        )
         self.autogen_config_action = QAction("Auto Gen Config Folder", self)
         self.validate_action = QAction("Validate", self)
         self.undo_action = QAction("Undo", self)
@@ -131,6 +144,7 @@ class MainWindow(QMainWindow):
             self.convert_file_action,
             self.convert_all_action,
             self.scan_mechanics_action,
+            self.gen_folder_quick_action,
             self.autogen_config_action,
             self.validate_action,
             self.undo_action,
@@ -253,6 +267,12 @@ class MainWindow(QMainWindow):
             "Dựng toàn bộ Box Ball Grid từ Pixel Grid theo độ khó đã chọn"
         )
         self.auto_gen_box_button.clicked.connect(self.auto_gen_boxes)
+        self.auto_gen_folder_button = QPushButton("Auto Gen Folder")
+        self.auto_gen_folder_button.setToolTip(
+            "Mở cửa sổ sinh box cho cả một folder ảnh hoặc folder file level:"
+            " xem trước từng bức tranh, chạy nền, log kết quả, xuất CSV"
+        )
+        self.auto_gen_folder_button.clicked.connect(self.open_auto_gen_folder_window)
         resize_box = QPushButton("Resize Box Grid")
         resize_box.clicked.connect(self.resize_box_grid)
         self.deselect_box_button = QPushButton("Deselect Box")
@@ -268,6 +288,7 @@ class MainWindow(QMainWindow):
         box_zoom_out.clicked.connect(self.box_editor.zoom_out)
         box_zoom_row = QHBoxLayout()
         box_zoom_row.addWidget(self.auto_gen_box_button)
+        box_zoom_row.addWidget(self.auto_gen_folder_button)
         box_zoom_row.addWidget(resize_box)
         box_zoom_row.addWidget(self.deselect_box_button)
         box_zoom_row.addWidget(self.swap_boxes_button)
@@ -423,6 +444,7 @@ class MainWindow(QMainWindow):
         self.convert_file_action.triggered.connect(self.convert_level_file)
         self.convert_all_action.triggered.connect(self.convert_level_folder)
         self.scan_mechanics_action.triggered.connect(self.scan_mechanics_folder)
+        self.gen_folder_quick_action.triggered.connect(self.auto_gen_boxes_folder)
         self.autogen_config_action.triggered.connect(self.choose_autogen_config_folder)
         self.validate_action.triggered.connect(self.validate)
         self.undo_action.triggered.connect(self.commands.undo)
@@ -961,6 +983,122 @@ class MainWindow(QMainWindow):
         # It does not any more: the report panel is what a designer keeps open
         # beside the grid, it is already brought to the front here, and its banner
         # says the same thing without a click - and without being gone afterwards.
+
+    def open_auto_gen_folder_window(self) -> None:
+        """The Auto Gen Folder workbench, kept as one window per editor."""
+        window = getattr(self, "auto_gen_folder_window", None)
+        if window is None:
+            window = AutoGenFolderWindow(
+                self,
+                settings=self.settings,
+                options=self.autogen_options,
+                difficulty=self.level.difficulty,
+            )
+            window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            window.open_level_requested.connect(self.open_generated_level)
+            self.auto_gen_folder_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def open_generated_level(self, path: str) -> None:
+        """Open a level the folder run just wrote, from its row in the log."""
+        if not self._confirm_discard():
+            return
+        self._load_path(Path(path), from_level_folder=True)
+        self.raise_()
+        self.activateWindow()
+
+    def auto_gen_boxes_folder(self) -> None:
+        """Auto Gen Box over every picture in one folder - art files or level files."""
+        dialog = AutoGenFolderDialog(
+            self,
+            source_folder=self.settings.get(
+                "autogen_batch_source_dir", self.settings.get("last_level_folder", "")
+            ),
+            output_folder=self.settings.get("autogen_batch_output_dir", ""),
+            preset_folder=self.settings.get("autogen_config_dir", ""),
+            options=self.autogen_options,
+            difficulty=self.level.difficulty,
+        )
+        if not self._is_dialog_accepted(dialog.exec()):
+            return
+
+        sources = dialog.sources
+        output_folder = dialog.output_folder
+        preset_folder = dialog.preset_folder
+        # Generating one level takes seconds, so a big folder is minutes the
+        # designer cannot do anything else during. Say so before it starts, the
+        # way the mechanics folder scan does, rather than after.
+        if len(sources) > 20 and QMessageBox.question(
+            self,
+            "Auto Gen Box cả folder",
+            f"{len(sources)} level sẽ được sinh vào {output_folder}.\n\n"
+            "Việc này có thể mất vài phút. Bấm Cancel là dừng giữa chừng — "
+            "các level đã sinh vẫn được giữ.\n\nChạy luôn?",
+        ) != QMessageBox.Yes:
+            return
+
+        progress_dialog = QProgressDialog("Đang sinh box...", "Cancel", 0, len(sources), self)
+        progress_dialog.setWindowTitle("Auto Gen Box cả folder")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+
+        def update_progress(current: int, total: int, source: BatchSource) -> None:
+            progress_dialog.setMaximum(total)
+            progress_dialog.setValue(current - 1)
+            progress_dialog.setLabelText(
+                f"({current}/{total}) {source.path.name} → level {source.level}"
+            )
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            summary = generate_folder(
+                sources,
+                output_folder,
+                dialog.options,
+                # Read off the form in one go rather than box by box: the
+                # workbench window takes the same dict, so a field added to the
+                # form cannot reach one path and be dropped on the other.
+                **dialog.run_kwargs(),
+                progress=update_progress,
+                should_cancel=progress_dialog.wasCanceled,
+            )
+        except AutoGenBatchError as exc:
+            QMessageBox.critical(self, "Auto Gen Box cả folder", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+            progress_dialog.setValue(len(sources))
+
+        self.settings.set("autogen_batch_source_dir", str(dialog.source_folder))
+        self.settings.set("autogen_batch_output_dir", str(output_folder))
+        if preset_folder is not None:
+            self.settings.set("autogen_config_dir", str(preset_folder))
+
+        AutoGenBatchReportDialog(summary, self, default_dir=str(output_folder)).exec()
+        self.statusBar().showMessage(
+            f"Auto Gen Folder: {summary.generated} xong, {summary.jammed} kẹt, "
+            f"{summary.failed} lỗi, {summary.skipped} bỏ qua"
+            + (f", {summary.unburied} hạ chôn box về Easy" if summary.unburied else ""),
+            8000,
+        )
+        self._reload_after_batch(summary)
+
+    def _reload_after_batch(self, summary: BatchSummary) -> None:
+        """The level on screen is stale if the run just wrote over its own file."""
+        if self.path is None or not any(item.output == self.path for item in summary.items):
+            return
+        if self.dirty:
+            QMessageBox.warning(
+                self,
+                "Auto Gen Box cả folder",
+                f"{self.path.name} vừa bị ghi đè, nhưng bản đang mở có thay đổi chưa lưu."
+                " Mở lại file để lấy bản vừa sinh, hoặc Save để giữ bản đang sửa.",
+            )
+            return
+        self._load_path(self.path, from_level_folder=self.auto_level_save)
 
     def resize_box_grid(self) -> None:
         dialog = ResizeGridDialog("Resize Box Grid", "Columns", "Rows", self.level.grid_cols, self.level.grid_rows, self)

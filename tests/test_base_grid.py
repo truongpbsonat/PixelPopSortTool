@@ -46,6 +46,7 @@ from pixel_level_tool.services.box_autogen import (
     build_base_grid,
     format_report,
     scan_level,
+    tunnels_can_release,
 )
 from pixel_level_tool.services.pixel_gameplay import (
     BoardState,
@@ -297,10 +298,16 @@ def test_no_shipped_tunnel_is_ever_sealed_in(difficulty, colours):
 
 
 def test_a_layer_that_cannot_be_played_is_dropped_for_a_gentler_one():
-    """Two tunnels on a four-box grid seal a mouth, and Hard is not shipped for it."""
+    """SuperHard scatters its tunnels and seals a mouth on a three-box grid.
+
+    The placement is what differs between the forms - SuperHard drops a tunnel
+    anywhere in the lattice, the gentler forms park it on the back row - so a
+    lattice this small is playable at one form and not at another, which is
+    exactly what the ladder exists for.
+    """
     result = auto_generate_boxes(
-        banded_level([0, 1, 2, 3]),
-        AutoGenOptions(difficulty=int(LevelDifficulty.Hard), seed=4),
+        banded_level([0, 1, 2]),
+        AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), seed=1),
     )
     relief = result.obstacle_relief
 
@@ -311,10 +318,15 @@ def test_a_layer_that_cannot_be_played_is_dropped_for_a_gentler_one():
 
 
 def test_when_every_form_is_unplayable_the_bare_base_grid_ships():
-    """A level with no mechanics beats no level, and beats a broken one."""
+    """A level with no mechanics beats no level, and beats a broken one.
+
+    Three tunnels asked of a three-box grid: `_tunnel_slots` prefers slots that
+    leave every mouth a box to hand its queue to, and a lattice this cramped has
+    none, so it seats them anyway and the fault is real at every form.
+    """
     result = auto_generate_boxes(
         banded_level([0, 1, 2]),
-        AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), tunnel_count=2, seed=4),
+        AutoGenOptions(difficulty=int(LevelDifficulty.SuperHard), tunnel_count=3, seed=4),
     )
 
     assert result.obstacle_free
@@ -335,4 +347,75 @@ def test_a_picture_whose_floor_cannot_be_laid_out_fails_loudly():
         auto_generate_boxes(
             scattered_level(),
             AutoGenOptions(difficulty=int(LevelDifficulty.Easy), allow_tunnels=False),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# A tunnel needs a box to hand its queue to, and the placement has to leave one
+# --------------------------------------------------------------------------- #
+# The regression this pins: an overflowing picture fills the back row with
+# tunnels, and the next tunnel used to go into the row in front of it - which is
+# the one slot the tunnel behind it was pointing at. That tunnel then had nothing
+# but tunnels on every side, `sealed_tunnel_mouths` failed the base grid, and
+# because the base grid is the fallback there was nothing left to ship: 81 boxes
+# on a 64-slot lattice refused the level outright with "Raise the slot limit or
+# use a smaller picture", when the boxes fitted perfectly well.
+def _boxy_level(size: int, colors: int = 8) -> PixelLevelData:
+    """A picture of whole-box runs, sized to need far more boxes than the lattice.
+
+    Long runs so the conveyor is never the problem - the only thing under test is
+    whether that many boxes can be laid out at all.
+    """
+    color_ids: list[int] = []
+    color = 1
+    while len(color_ids) < size * size:
+        color_ids.extend([color] * BALLS_PER_BOX)
+        color = color % colors + 1
+    return make_level(color_ids[: size * size], size, size)
+
+
+def test_tunnels_can_release_spots_a_tunnel_walled_in_by_tunnels():
+    """The predicate itself: a chosen set where some tunnel has no free neighbour."""
+    # A full back row plus the slot in front of its corner: (0, 2) is boxed in by
+    # (1, 2) and (0, 1), both tunnels.
+    assert not tunnels_can_release([(0, 2), (1, 2), (0, 1)], 2, 3)
+    # Move that third tunnel one row further in and every mouth has a slot again.
+    assert tunnels_can_release([(0, 2), (1, 2), (0, 0)], 2, 3)
+    # A single tunnel on a lattice with room is always fine.
+    assert tunnels_can_release([(0, 2)], 2, 3)
+
+
+@pytest.mark.parametrize("size", [27, 30, 36, 42])
+def test_a_picture_that_overflows_the_lattice_still_lays_out(size):
+    """The boxes fit in lattice plus tunnels, so the run has no business refusing."""
+    level = _boxy_level(size)
+    boxes = sum(level.pixel_grid.histogram().values()) // BALLS_PER_BOX
+    assert boxes > MAX_BOX_SLOTS**2, "the fixture has to overflow the lattice"
+
+    result = auto_generate_boxes(
+        level, AutoGenOptions(difficulty=int(LevelDifficulty.Medium), seed=7)
+    )
+
+    assert result.surface_boxes + result.tunnel_boxes == boxes
+    assert result.winnable and result.valid
+    assert_valid(result.level)
+
+
+@pytest.mark.parametrize("size", [27, 30, 36, 42])
+def test_every_tunnel_on_an_overflowing_grid_faces_a_real_box(size):
+    """The property the placement now keeps, read off the finished layout."""
+    result = auto_generate_boxes(
+        _boxy_level(size), AutoGenOptions(difficulty=int(LevelDifficulty.Medium), seed=7)
+    )
+    assert result.tunnel_count, "the fixture has to need tunnels"
+
+    box_slots = {
+        (cell.grid_x // SLOT, cell.grid_y // SLOT)
+        for cell in result.level.grid_cells
+        if not isinstance(cell, TunnelCellData)
+    }
+    for (slot_x, slot_y), facing in result.tunnel_mouths:
+        step = DIRECTION_STEPS[facing]
+        assert (slot_x + step[0], slot_y + step[1]) in box_slots, (
+            f"tunnel at ({slot_x}, {slot_y}) facing {facing.name} has no box to release into"
         )

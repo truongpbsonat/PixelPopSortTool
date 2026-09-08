@@ -27,11 +27,9 @@ from pixel_level_tool.services.box_autogen import (
     SLOT,
     AutoGenOptions,
     format_scan,
+    rate_picture,
 )
-from pixel_level_tool.services.picture_scan import (
-    PictureScan,
-    suggest_difficulty,
-)
+from pixel_level_tool.services.picture_scan import PictureScan
 
 
 class AutoGenBoxDialog(QDialog):
@@ -130,12 +128,25 @@ class AutoGenBoxDialog(QDialog):
         index = self.difficulty.findData(difficulty)
         self.difficulty.setCurrentIndex(index if index != -1 else 0)
 
-        self.auto_difficulty = QCheckBox("Lấy độ khó từ ảnh")
+        # The reading itself goes on the label rather than only in the tooltip:
+        # it is the answer to "what would the picture say", and a designer
+        # deciding whether to hand the tier over to the picture wants to see it
+        # before they tick rather than after they generate.
+        rating = rate_picture(scan) if scan is not None and scan.painted else None
+        self.auto_difficulty = QCheckBox(
+            "Lấy độ khó từ ảnh" + (f"  ({rating.reason})" if rating else "")
+        )
         self.auto_difficulty.setToolTip(
-            "Đọc độ khó từ chính bức ảnh thay vì từ ô bên trên:\n"
-            "  dưới 4 màu = Easy, 4-8 màu = Medium, 9-12 màu = Hard, trên 12 = SuperHard.\n"
+            "Đọc độ khó từ chính bức ảnh thay vì từ ô bên trên, theo hai bước:\n"
+            "  1. ảnh này DỄ / VỪA / KHÓ — đọc theo số màu, là cái nhìn ra ngay được:\n"
+            "     dưới 4 màu = dễ, 4-8 màu = vừa, từ 9 màu = khó.\n"
+            "  2. từ mức đó chọn mức để dựng: Easy / Medium / Hard / SuperHard.\n"
+            "     Thang dựng rộng hơn thang nhìn một bậc, vì trên 12 màu là quá cỡ những gì\n"
+            "     thang ba mức được vẽ ra để tả, nên đi thẳng SuperHard thay vì kẹp vào Hard.\n"
             "Ảnh vụn (mỗi màu bị cắt thành nhiều mảnh nhỏ theo thứ tự ăn) được nâng thêm\n"
-            "một nấc, vì nó bắt người chơi giữ nhiều màu trên băng cùng lúc."
+            "một nấc, vì nó bắt người chơi giữ nhiều màu trên băng cùng lúc.\n"
+            "Mức đọc ra là MỤC TIÊU, không phải kết quả: obstacle được thêm vào cho tới khi\n"
+            "độ khó tổng hợp của level chạm mức đó — xem ô tự tăng ở cột Obstacle."
         )
         self.auto_difficulty.toggled.connect(self._update_enabled)
         if scan is not None:
@@ -197,6 +208,45 @@ class AutoGenBoxDialog(QDialog):
             "Vẫn giữ đủ số loại obstacle của mức, chỉ nhẹ tay hơn: link rút cạn ngay thay vì\n"
             "ngồi chiếm khay, mũi tên chỉ vào box vừa mở, chôn box nông hơn, ít wall hơn.\n"
             "Tắt thì mỗi mức luôn dùng đúng dạng của nó, kể cả khi băng không còn chỗ."
+        )
+
+        self.jam_relief = QCheckBox("Hạ chôn box về Easy khi tranh không thắng được")
+        self.jam_relief.setChecked(True)
+        self.jam_relief.setToolTip(
+            "Chạy đúng một trường hợp: dòng 'KHÔNG THỂ THẮNG với piece hiện tại' ở khung trên,\n"
+            "tức tranh không qua được trên băng của chính level (đọc SAU khi đã sửa tranh, nên\n"
+            "tranh nào sửa xong mà thắng được thì ô này không dính tới).\n"
+            "\n"
+            "Lúc đó chỉ riêng phần CHÔN BOX hạ về mức Easy — box ẩn 8% thay vì 60%, xếp box đúng\n"
+            "thứ tự giải thay vì rắc khắp lưới, tunnel nhả box đúng lúc tranh cần.\n"
+            "Obstacle ĐẶT LÊN TRÊN (wall, arrow, link, frozen, LargeBlock) vẫn giữ dạng của mức\n"
+            "đã đặt, và ô 'Tự tăng obstacle' ngay dưới còn thêm chúng vào để bù lại phần độ khó\n"
+            "vừa mất — nên level không bị dựng trơ, chỉ bớt bị chôn.\n"
+            "\n"
+            "Vì sao cần ô riêng: ô 'Tự hạ' ngay trên chỉ phản ứng khi BĂNG từ chối, mà box ẩn\n"
+            "không tốn bóng nào nên băng không bao giờ từ chối nó. Thêm nữa obstacle được kiểm\n"
+            "chứng trên băng mà tranh CẦN, không phải băng level đang có — nên nếu không có ô này\n"
+            "thì một level đã kẹt vẫn bị chôn ở mức khó nhất, không ai đọc được.\n"
+            "\n"
+            "Ô này KHÔNG làm tranh thắng được — không có nút nào làm được, vì tranh kẹt là tranh\n"
+            "so với băng của chính nó, đo TRƯỚC khi sinh box. Chỉ nâng piece hoặc vẽ lại mới hết\n"
+            "kẹt. Level vẫn là đúng mức đã đặt: difficulty, theme và số loại obstacle không đổi;\n"
+            "nâng piece lên đúng số trong cảnh báo rồi gen lại là chôn box trở về đúng mức đó.\n"
+            "Tắt thì tranh kẹt vẫn bị chôn theo mức đã đặt, như trước đây."
+        )
+
+        self.difficulty_climb = QCheckBox("Tự tăng obstacle cho tới khi đủ độ khó của tranh")
+        self.difficulty_climb.setChecked(True)
+        self.difficulty_climb.setToolTip(
+            "Ngược lại với ô tự hạ ở trên, và đo cùng một thứ: độ khó TỔNG HỢP của level.\n"
+            "Độ khó của level không phải từng obstacle chấm riêng lẻ, mà là tổng của số box bị\n"
+            "chôn/ẩn cộng với mọi obstacle được thêm vào — quy về cùng thang 0-3 của bốn mức.\n"
+            "Dựng xong, tổng đó được đo lại. Nếu thấp hơn mức tranh đọc ra thì từng loại obstacle\n"
+            "được siết lại về đúng liều của mức đó, loại không tốn băng trước (Frozen, LargeBlock,\n"
+            "box ẩn, mũi tên), loại tốn băng sau cùng (chôn tunnel, link) — dựng lại và đo lại từng\n"
+            "lần, chỉ giữ lần nào vừa chơi được vừa thật sự tăng điểm.\n"
+            "Không siết quá liều của mức bạn đã chọn, và không bù cho loại obstacle bạn tự tắt.\n"
+            "Tắt thì level ra sao ship vậy — có thể mang nhãn Hard mà chơi như Easy."
         )
 
         self.hidden_ratio = QSpinBox()
@@ -490,6 +540,28 @@ class AutoGenBoxDialog(QDialog):
             "chỉ thứ tự tranh đòi màu là đổi. Report liệt kê từng nước đã sửa và ô nào bị đổi."
         )
 
+        self.drop_scattered_colors = QCheckBox("Bỏ màu quá vụn nếu vẫn không qua được")
+        self.drop_scattered_colors.setChecked(False)
+        self.drop_scattered_colors.setToolTip(
+            "Chỉ chạy khi 'Sửa tranh cho chơi được' đã chạy mà tranh VẪN không thắng được.\n"
+            "Việc sửa ở trên là một phép ĐỔI CHỖ: đốm lẻ thành màu bên cạnh rồi màu đó trả lại\n"
+            "đúng số pixel cạnh mảng lớn của chính màu kia. Màu nào không có mảng lớn thì không\n"
+            "có chỗ trả — hết nước, băng vẫn thiếu. Lúc đó chỉ còn nước gom MỘT CHIỀU.\n"
+            "\n"
+            "Được viết để sửa ÍT NHẤT CÓ THỂ:\n"
+            "  • mỗi nước bỏ đúng 1 box = 9 pixel đốm vụn — mức nhỏ nhất histogram cho phép,\n"
+            "    vì mọi màu buộc phải chia hết cho 9 mới dựng được box;\n"
+            "  • thử hết các màu rồi chọn box nào HẠ BĂNG NHIỀU NHẤT (chọn theo 'màu vụn nhất'\n"
+            "    là sai: nó có thể làm băng TĂNG lên và phải sơn lại 1/4 bức tranh);\n"
+            "  • DỪNG NGAY khi tranh thắng được, không dư một box nào;\n"
+            "  • nếu không thắng được trong 12% số pixel thì TRẢ TRANH VỀ NGUYÊN VẸN và để\n"
+            "    level KẸT — tranh cần hơn thế là ảnh noise, câu trả lời đúng là tăng 'piece'.\n"
+            "\n"
+            "Mảng lớn của mọi màu được giữ nguyên. Một màu chỉ rời bảng màu khi số pixel vừa gom\n"
+            "đúng bằng tất cả những gì nó có (màu lẻ chỉ vài box, rắc khắp tranh).\n"
+            "Dừng khi còn 3 màu. Report nói từng nước ở ô nào, mất mấy mảng vụn, và mất màu nào."
+        )
+
         self.ease_difficulty = QSpinBox()
         self.ease_difficulty.setRange(0, 3)
         self.ease_difficulty.setValue(0)
@@ -528,6 +600,7 @@ class AutoGenBoxDialog(QDialog):
         board.addRow("Hạ độ khó", self.ease_difficulty)
         board.addRow("Xóc lại", self.shuffle_attempts)
         board.addRow("", self.repair_picture)
+        board.addRow("", self.drop_scattered_colors)
         board.addRow("Số slot box tối đa theo chiều ngang", self.slot_cols)
         board.addRow("Số slot box tối đa theo chiều dọc", self.slot_rows)
         board.addRow("", self.capacity_label)
@@ -550,6 +623,8 @@ class AutoGenBoxDialog(QDialog):
         obstacles.addRow(self.obstacle_budget_label)
         obstacles.addRow("Dạng obstacle nhẹ đi", self.ease_obstacles)
         obstacles.addRow("", self.obstacle_relief)
+        obstacles.addRow("", self.jam_relief)
+        obstacles.addRow("", self.difficulty_climb)
         obstacles.addRow(self._section("Hidden — box ẩn màu"))
         obstacles.addRow("Tỷ lệ box ẩn", self.hidden_ratio)
         obstacles.addRow("Số box ẩn", self.hidden_boxes)
@@ -649,7 +724,7 @@ class AutoGenBoxDialog(QDialog):
     def _apply_scanned_difficulty(self, on: bool) -> None:
         """Show the tier the scan reads, so the combo never contradicts the label."""
         if on and self.scan is not None and self.scan.painted:
-            self._select(self.difficulty, suggest_difficulty(self.scan))
+            self._select(self.difficulty, rate_picture(self.scan).tier)
 
     def _update_enabled(self) -> None:
         self.difficulty.setEnabled(not self.auto_difficulty.isChecked())
@@ -767,7 +842,10 @@ class AutoGenBoxDialog(QDialog):
         self._select(self.lock_rounding, options.lock_rounding)
         self.shuffle_obstacles.setChecked(options.shuffle_obstacles)
         self.obstacle_relief.setChecked(options.obstacle_relief)
+        self.jam_relief.setChecked(options.jam_relief)
+        self.difficulty_climb.setChecked(options.difficulty_climb)
         self.repair_picture.setChecked(options.repair_picture)
+        self.drop_scattered_colors.setChecked(options.drop_scattered_colors)
         self.ease_difficulty.setValue(max(0, options.ease_difficulty))
         self.ease_obstacles.setValue(max(0, options.ease_obstacles))
         self.shuffle_attempts.setValue(max(1, options.shuffle_attempts))
@@ -811,7 +889,10 @@ class AutoGenBoxDialog(QDialog):
             lock_rounding=str(self.lock_rounding.currentData()),
             shuffle_obstacles=self.shuffle_obstacles.isChecked(),
             obstacle_relief=self.obstacle_relief.isChecked(),
+            jam_relief=self.jam_relief.isChecked(),
+            difficulty_climb=self.difficulty_climb.isChecked(),
             repair_picture=self.repair_picture.isChecked(),
+            drop_scattered_colors=self.drop_scattered_colors.isChecked(),
             ease_difficulty=self.ease_difficulty.value(),
             ease_obstacles=self.ease_obstacles.value(),
             shuffle_attempts=self.shuffle_attempts.value(),

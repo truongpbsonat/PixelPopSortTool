@@ -26,6 +26,7 @@ until it runs out of short runs to merge - and reports every move it made, so a
 designer can see their artwork's edits as a list rather than as a diff.
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 from itertools import groupby
 
@@ -64,11 +65,39 @@ class RepairMove:
     paid_at: tuple[int, int]
 
 
+@dataclass(frozen=True)
+class ColorDrop:
+    """One box worth of a colour's specks given up on, and what they became.
+
+    Exactly ``pixels`` (one box) of ``color`` - its *shortest* stretches, the
+    ones that jam the belt - became ``into``, and ``runs_removed`` stretches
+    disappeared from the picture's pass as a result. ``gone`` is true only when
+    that was the whole of ``color``, which is what happens to a colour that owned
+    a single box and had it sprinkled: the palette loses it. Every other colour
+    keeps every pixel it had.
+    """
+
+    color: int
+    into: int
+    pixels: int
+    runs_removed: int
+    gone: bool
+    at: tuple[int, int]
+
+    @property
+    def boxes(self) -> int:
+        return self.pixels // BALLS_PER_BOX
+
+
 @dataclass
 class RepairReport:
     """What the repair did, and whether it was enough."""
 
     moves: list[RepairMove] = field(default_factory=list)
+    # Colours the second pass gave up on entirely, in the order it dropped them.
+    # Empty unless the designer ticked for it: this one changes the artwork's
+    # palette, which `moves` never does.
+    drops: list[ColorDrop] = field(default_factory=list)
     # Belt the picture needed before and after, in balls, and the run counts that
     # explain the difference.
     belt_before: int = 0
@@ -83,12 +112,17 @@ class RepairReport:
 
     @property
     def changed(self) -> bool:
-        return bool(self.moves)
+        return bool(self.moves or self.drops)
 
     @property
     def pixels(self) -> int:
         """Pixels recoloured, counting both halves of every move."""
         return sum(move.pixels * 2 for move in self.moves)
+
+    @property
+    def dropped_pixels(self) -> int:
+        """Pixels that changed colour because their colour was dropped."""
+        return sum(drop.pixels for drop in self.drops)
 
     @property
     def wins(self) -> bool:
@@ -382,14 +416,367 @@ def repair_picture(
     return report
 
 
+# --------------------------------------------------------------------------- #
+# The second pass: thin the specks a colour cannot be paid back for
+# --------------------------------------------------------------------------- #
+# `repair_picture` never changes what a colour owns, which is what makes it safe
+# to leave on by default - and also what limits it. Its merge is a *swap*: the
+# speck becomes its neighbour and the neighbour hands the same number of pixels
+# back beside the colour's own large region. A colour with no large region has
+# nowhere to be paid back from, so no swap exists, and the pass reports
+# `exhausted` with the belt still short.
+#
+# The move that is left is a **one-way** merge: the speck becomes its neighbour
+# and nothing comes back. That changes what a colour owns, which is why it is
+# opt-in - but it does not have to change much. The unit is one box, nine
+# pixels, because that is the smallest edit the histogram permits: every colour
+# has to stay a whole number of boxes or the level cannot be built at all. So
+# each step gives up exactly one box of one colour's *shortest* stretches, the
+# belt is read again, and the loop stops the instant the picture wins.
+#
+# Nine pixels at a time is the whole point. Picking the colour with the most
+# short runs sounds right and is wrong: that is the *biggest* scattered colour,
+# and giving it up whole repaints the picture's own subject. What actually wants
+# thinning is the minor colour sprinkled as dust - the one whose runs are
+# shortest, so nine pixels buys the most runs removed.
+#
+# A picture with fewer colours than this is not a level any more, so the pass
+# stops rather than keep going.
+MIN_COLORS_KEPT = 3
+
+# Share of the painted picture the pass may recolour before it gives up. A
+# picture needing more than this is not artwork with dust on it, it is noise, and
+# the honest answer for it is a wider `piece` - so the artwork is put back
+# exactly as it was and the level ships as a jam. Better a jam than a different
+# picture.
+#
+# Measured on 24x24 pictures that are part painted bands and part per-pixel
+# noise, after the safe pass has already run: a picture 60% noise wins on 11% of
+# its pixels recoloured, one 70% noise wants 19%, and pure noise never wins at
+# all. So this sits above the first and below the second - the cases it refuses
+# are the ones where "repair" would have meant "repaint".
+MAX_THIN_SHARE = 0.12
+
+
+def color_scatter(sequence: list[int]) -> dict[int, tuple[int, int, float]]:
+    """``(runs, short runs, mean short run)`` per colour, in play order.
+
+    The three numbers that say whether a colour is *painted* or *sprinkled*. A
+    colour the picture asks for in two long stretches costs the belt nothing; the
+    same number of pixels in twenty specks is what no tap order can absorb.
+
+    The mean is taken over the **short** runs only, because that is the number
+    that says how much one box of thinning buys: nine pixels of one-pixel dust
+    removes nine runs, nine pixels of four-pixel specks removes two.
+    """
+    runs = _runs_with_positions(sequence)
+    per_color: dict[int, list[int]] = {}
+    for color, _, length in runs:
+        per_color.setdefault(color, []).append(length)
+    scatter: dict[int, tuple[int, int, float]] = {}
+    for color, lengths in per_color.items():
+        short = [length for length in lengths if length < WHOLE_RUN]
+        scatter[color] = (
+            len(lengths),
+            len(short),
+            sum(short) / len(short) if short else 0.0,
+        )
+    return scatter
+
+
+def thinnable_colors(sequence: list[int]) -> list[int]:
+    """Colours with a whole box of dust to give up, dustiest and smallest first.
+
+    A colour with no stretch shorter than a box has nothing to give: each of its
+    runs is spent by the tap that pours it and costs the belt nothing. A colour
+    with fewer than nine pixels in short stretches has dust but not a box of it,
+    and a box is the smallest edit the histogram permits.
+
+    The order is a preference, not a decision - :func:`most_scattered_color`
+    reads it when nothing else separates two candidates.
+    """
+    scatter = color_scatter(sequence)
+    runs = _runs_with_positions(sequence)
+    dust: Counter[int] = Counter()
+    for color, _, length in runs:
+        if length < WHOLE_RUN:
+            dust[color] += length
+    owned = Counter(sequence)
+    ranked = [
+        (mean, owned[color], color)
+        for color, (_, short, mean) in scatter.items()
+        if short and dust[color] >= BALLS_PER_BOX
+    ]
+    return [color for _, _, color in sorted(ranked)]
+
+
+def most_scattered_color(sequence: list[int]) -> int | None:
+    """The dustiest colour with a box to give up, or ``None`` if there is none.
+
+    Ranked by how short its stretches are, then by how few pixels it owns: of two
+    equally dusty colours the minor one is the one to thin, because it is the one
+    the picture is least about.
+
+    Deliberately *not* "the colour with the most short runs". That is the biggest
+    scattered colour, and thinning it first repaints the picture's own subject.
+    This is only the tie-breaker, though: what actually chooses each step is
+    which colour's box of dust buys the most belt back - see :func:`best_thin`.
+    """
+    ranked = thinnable_colors(sequence)
+    return ranked[0] if ranked else None
+
+
+def best_thin(
+    grid: PixelGridData, sequence: list[int], box_size: int = BALLS_PER_BOX
+) -> tuple[int, int] | None:
+    """``(belt, colour)`` for the box of dust that buys the most belt back.
+
+    Greedy on the thing that actually matters, because a greedy on dustiness is
+    not just weaker - it is **wrong**. Merging a colour's specks into a
+    neighbour lengthens that neighbour's runs and shortens nothing else, so it
+    can leave the picture needing a *wider* belt than before: measured on a
+    half-noise picture, thinning the dustiest colour first took the belt from 49
+    to 57 and needed a quarter of the artwork recoloured before it came back.
+
+    So every candidate is tried on a copy and scored by the belt it leaves.
+    Ties go to the smaller colour, so dust is sacrificed before subject.
+    ``None`` when no colour has a whole box of dust to give.
+    """
+    owned = Counter(sequence)
+    best: tuple[tuple[int, int, int], int] | None = None
+    for color in thinnable_colors(sequence):
+        trial = PixelGridData(grid.width, grid.height, list(grid.color_ids))
+        if thin_once(trial, sequence, play_cells(trial), color) is None:
+            continue
+        belt = belt_for_play(play_sequence(trial), box_size)
+        key = (belt, owned[color], color)
+        if best is None or key < best[0]:
+            best = (key, color)
+    return (best[0][0], best[1]) if best is not None else None
+
+
+def _neighbour_of(sequence: list[int], start: int, length: int, color: int) -> int | None:
+    """The colour a stretch of ``color`` sits against in the picture's own pass."""
+    before = next(
+        (sequence[i] for i in range(start - 1, -1, -1) if sequence[i] != color), None
+    )
+    after = next(
+        (sequence[i] for i in range(start + length, len(sequence)) if sequence[i] != color),
+        None,
+    )
+    return before if before is not None else after
+
+
+def thin_once(
+    grid: PixelGridData, sequence: list[int], cells: list[tuple[int, int]], color: int
+) -> ColorDrop | None:
+    """Give up exactly one box of ``color``'s shortest stretches. One-way.
+
+    Shortest first, because those cost the belt most per pixel: a one-pixel speck
+    spends one ball and holds the other eight until that colour comes round
+    again. Taken until nine pixels are gathered, the last stretch contributing
+    only as much as is needed - a partial merge, which is what the safe pass does
+    too.
+
+    All nine go to **one** receiver, and that is forced rather than chosen: nine
+    pixels cannot be split into two whole boxes, so any other split leaves a
+    receiver with a remainder and the level unbuildable. The receiver is the
+    colour most of the nine already sit against, so the edit reads as dust
+    settling onto what was beside it.
+
+    ``None`` when ``color`` has fewer than nine pixels in stretches shorter than
+    a box - there is no whole box of dust to give up.
+    """
+    short = sorted(
+        (length, start)
+        for value, start, length in _runs_with_positions(sequence)
+        if value == color and length < WHOLE_RUN
+    )
+    taken: list[int] = []
+    receivers: Counter[int] = Counter()
+    removed = 0
+    for length, start in short:
+        neighbour = _neighbour_of(sequence, start, length, color)
+        if neighbour is None:
+            continue
+        want = min(length, BALLS_PER_BOX - len(taken))
+        taken.extend(range(start, start + want))
+        receivers[neighbour] += want
+        # A stretch only leaves the picture's pass when all of it goes.
+        if want == length:
+            removed += 1
+        if len(taken) == BALLS_PER_BOX:
+            break
+    if len(taken) < BALLS_PER_BOX:
+        return None
+
+    into = receivers.most_common(1)[0][0]
+    for step in taken:
+        row, column = cells[step]
+        grid.set_color_id(row, column, into)
+    return ColorDrop(
+        color=color,
+        into=into,
+        pixels=len(taken),
+        runs_removed=removed,
+        gone=sum(1 for value in sequence if value == color) == len(taken),
+        at=cells[taken[0]],
+    )
+
+
+def drop_scattered_colors(
+    grid: PixelGridData,
+    *,
+    belt_slots: int,
+    box_size: int = BALLS_PER_BOX,
+    margin: int | None = None,
+    min_colors: int = MIN_COLORS_KEPT,
+    max_share: float = MAX_THIN_SHARE,
+    report: RepairReport | None = None,
+) -> RepairReport:
+    """Thin dust one box at a time, taking the box that buys the most belt back.
+
+    The last resort, and the only repair that changes what a colour owns - so it
+    is written to change as little as it can get away with:
+
+    * **one box per step**, the smallest edit a histogram of whole boxes allows;
+    * the box that **lowers the belt most**, chosen by trying every candidate -
+      see :func:`best_thin` for why dustiness alone is the wrong objective;
+    * it stops **the moment the belt wins**, not one box past it and not when
+      the palette looks tidy. The safe pass aims for margin; this one is only
+      ever buying the win, so it buys exactly that;
+    * a step that makes the belt *worse* is undone rather than kept, and the
+      artwork is only ever left in the best state seen;
+    * and if it cannot win inside ``max_share`` of the picture, the artwork is
+      **put back exactly as it was**. A picture needing more than a few per cent
+      recoloured is noise rather than art with dust on it, and the honest answer
+      for it is a wider ``piece``, not a different picture.
+
+    A colour only leaves the palette when the box given up was all it had, which
+    is the case this exists for: one box of a colour, sprinkled. Colours the
+    picture is actually made of keep every pixel of their real regions and lose
+    only dust.
+    """
+    grid.ensure_dense()
+    sequence = play_sequence(grid)
+    start_belt = belt_for_play(sequence, box_size)
+    if report is None:
+        runs = _runs_with_positions(sequence)
+        report = RepairReport(
+            belt_before=start_belt,
+            belt_after=start_belt,
+            runs_before=len(runs),
+            runs_after=len(runs),
+            short_before=sum(1 for _, _, length in runs if length < box_size),
+            short_after=sum(1 for _, _, length in runs if length < box_size),
+            belt_slots=belt_slots,
+        )
+    if start_belt <= belt_slots:
+        return report
+
+    before = list(grid.color_ids)
+    target = belt_slots - max(0, margin or 0)
+    budget = max(box_size, int(len(sequence) * max(0.0, max_share)))
+    drops: list[ColorDrop] = []
+    spent = 0
+    # The narrowest belt seen, and the artwork that produced it. A step is only
+    # worth keeping if it left the picture better than the best so far - which
+    # is not automatic, because merging dust into a neighbour lengthens that
+    # neighbour's runs and can widen the belt it needs.
+    best_belt = start_belt
+    best_pixels = list(grid.color_ids)
+    best_drops: list[ColorDrop] = []
+
+    while spent + box_size <= budget and len(grid.histogram()) > max(1, min_colors):
+        choice = best_thin(grid, sequence, box_size)
+        if choice is None:
+            break
+        _, color = choice
+        drop = thin_once(grid, sequence, play_cells(grid), color)
+        if drop is None:
+            break
+        drops.append(drop)
+        spent += drop.pixels
+        grid.ensure_dense()
+        sequence = play_sequence(grid)
+        belt = belt_for_play(sequence, box_size)
+        if belt < best_belt:
+            best_belt, best_pixels, best_drops = belt, list(grid.color_ids), list(drops)
+        if belt <= target:
+            break
+
+    grid.color_ids = best_pixels
+    grid.ensure_dense()
+    drops = best_drops
+    belt = best_belt
+    if belt > belt_slots:
+        # It did not buy a win, so it bought nothing worth the edit.
+        grid.color_ids = before
+        grid.ensure_dense()
+        drops = []
+        belt = belt_for_play(play_sequence(grid), box_size)
+    sequence = play_sequence(grid)
+
+    runs = _runs_with_positions(sequence)
+    report.drops = drops
+    report.belt_after = belt
+    report.runs_after = len(runs)
+    report.short_after = sum(1 for _, _, length in runs if length < box_size)
+    report.exhausted = not report.wins
+    return report
+
+
 def repair_summary(report: RepairReport) -> str:
-    """The repair as one sentence, for the confirmation prompt and the report."""
+    """The repair as one sentence, for the confirmation prompt and the report.
+
+    The two passes are said separately on purpose. Merging specks keeps every
+    colour's pixel count to the pixel, so a designer can leave it on and never
+    look; dropping a colour takes it off the palette, so it has to be spelled out
+    with the colour named and how scattered it was - that is the number that
+    justifies the edit.
+    """
     if not report.changed:
         return "không phải sửa gì"
-    moves = len(report.moves)
+    parts = [text for text in (merge_summary(report), drop_summary(report)) if text]
+    return " · ".join(parts) + ": " + belt_summary(report)
+
+
+def merge_summary(report: RepairReport) -> str:
+    """The safe pass on its own, so a caller can say what it did without the drops."""
+    if not report.moves:
+        return ""
     return (
-        f"gom {moves} đốm màu lẻ ({report.pixels} pixel đổi màu, số pixel mỗi màu không đổi): "
-        f"băng cần giảm từ {report.belt_before} xuống {report.belt_after}/{report.belt_slots} bóng, "
+        f"gom {len(report.moves)} đốm màu lẻ ({report.pixels} pixel đổi màu, "
+        "số pixel mỗi màu không đổi)"
+    )
+
+
+def drop_summary(report: RepairReport) -> str:
+    """The dust given up on, measured, so the edit can be justified."""
+    if not report.drops:
+        return ""
+    gone = [drop.color for drop in report.drops if drop.gone]
+    return (
+        f"bỏ {len(report.drops)} box đốm màu vụn ({report.dropped_pixels} pixel đổi màu, "
+        "mảng lớn của mọi màu giữ nguyên"
+        + (
+            f", mất màu {', '.join(str(color) for color in gone)}"
+            if gone
+            else ", không mất màu nào"
+        )
+        + "): "
+        + ", ".join(
+            f"màu {drop.color} → {drop.into} (mất {drop.runs_removed} mảng vụn)"
+            for drop in report.drops
+        )
+    )
+
+
+def belt_summary(report: RepairReport) -> str:
+    """What the repair bought, in belt balls and in run counts."""
+    return (
+        f"băng cần giảm từ {report.belt_before} xuống "
+        f"{report.belt_after}/{report.belt_slots} bóng, "
         f"mảng màu từ {report.runs_before} xuống {report.runs_after} "
         f"({report.short_before} → {report.short_after} mảng ngắn hơn {BALLS_PER_BOX} pixel)"
     )

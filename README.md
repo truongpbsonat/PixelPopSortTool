@@ -74,7 +74,8 @@ fields and can discover TrioBox and PopMachine data even though those cells are 
 powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ```
 
-Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth, wall reachability, arrow lock keys, linked container tray pressure, obstacle relief on a belt-tight picture, the certified base grid, a scattered 72-box picture built from level 15's own multiset, picture repair, scenario easing and seed shuffling), and GUI smoke
+Current suite covers shape footprints/rotation, box placement, pixel row-major data, serializer, validator, image import, Auto Gen Box (balancing, gameplay model, difficulty bands, tunnel queues and dig depth, wall reachability, arrow lock keys, linked container tray pressure, obstacle relief on a belt-tight picture, the certified base grid, a scattered 72-box picture built from level 15's own multiset, picture repair, the two-step reading of a picture's difficulty, the difficulty a level adds up to and
+the climb that closes the gap to it, scenario easing and seed shuffling), and GUI smoke
 startup.
 
 ## Build EXE
@@ -198,7 +199,10 @@ the same mechanics in a gentler form — see
    before anything changes.
 2. **Scan** — the picture is read in play order and measured: color count, how many contiguous runs
    each color breaks into, how much conveyor the picture needs at its worst moment, and where the
-   outline has holes. Tick **Lấy độ khó từ ảnh** to let the scan name the difficulty. The scan also
+   outline has holes. Tick **Lấy độ khó từ ảnh** to let the scan name the difficulty — in two steps,
+   see [Difficulty](#difficulty): what the artwork *is* on the three-wide scale, and which of the four
+   build tiers to aim at. What comes out of that is a **target**, not a description of the finished
+   level; step 12b is where the level is measured against it. The scan also
    states the **`piece` this picture needs** — see [The belt a picture needs](#the-belt-a-picture-needs)
    — and whether the level's current one is enough.
 3. **Repair** (only when the picture cannot be won on the belt it has) — the jam is never about a
@@ -211,6 +215,35 @@ the same mechanics in a gentler form — see
    as shipped needs a 54-ball belt on `piece: 5`; 40 merges (94 of its 648 pixels recoloured) bring it to
    32/45 — piece 4 — with its 72 boxes untouched. Every move is listed in the report with the cell it
    happened on, and **Sửa tranh cho chơi được** turns it off.
+3b. **Thin the dust** (opt-in, and only after step 3 has already failed) — stage 3's merge is a *swap*:
+   the speck becomes its neighbour and the neighbour hands the same number of pixels back beside the
+   colour's own large region. A colour with **no** large region has nowhere to be paid back from, so no
+   swap exists and the pass gives up with the belt still short. What is left is a **one-way** merge: the
+   speck becomes its neighbour and nothing comes back. That does change what a colour owns, which is why
+   ticking **Bỏ màu quá vụn nếu vẫn không qua được** is opt-in — but it is written to change as little as
+   it possibly can:
+
+   - **One box, nine pixels, per step.** That is the smallest edit the histogram permits, because every
+     colour has to stay a whole number of boxes or no box grid can be built from it. The nine all go to
+     one receiver for the same reason: nine pixels cannot be split into two whole boxes.
+   - **The box that lowers the belt most**, found by trying every candidate on a copy. Picking "the
+     dustiest colour" sounds right and is wrong — merging a colour's specks into a neighbour lengthens
+     *that* neighbour's runs, so it can leave the picture needing a **wider** belt. Measured on a
+     half-noise picture: dustiest-first took the belt from 49 to 57 and wanted a quarter of the artwork
+     recoloured before it came back; belt-greedy wins on **11%** of the pixels.
+   - **Stops the instant the picture wins**, not one box past it. Stage 3 aims for margin; this one is
+     only ever buying the win, so that is all it buys.
+   - **Puts the artwork back if it cannot win inside 12% of the pixels.** A picture needing more than
+     that is noise rather than art with dust on it, and the honest answer for it is a wider `piece` —
+     so the level ships as a jam with the picture untouched. Better a jam than a different picture.
+
+   Measured on 24×24 pictures that are part painted bands and part per-pixel noise: 60% noise goes from
+   `KẸT` at 49/45 to winnable at 43/45 on **11% of its pixels**, keeping nine of its ten colours; 70%
+   noise and pure noise are refused and left exactly as painted. The **major colours always survive** —
+   a colour leaves the palette only when the nine pixels taken were the last it had, which is the `màu
+   lẻ` case: a colour owning two or three boxes, sprinkled. It stops at **three colours** regardless.
+   The report places every step on the canvas (`ô hàng r, cột c`), says how many specks it removed, and
+   names any colour that ran out.
 4. **Walkthrough** — the box multiset is fully determined by the pixel histogram (`count / 9` boxes per
    color), so only the pick order is open. A depth-first search with memoisation finds an order that
    wins on the belt, paying the frontier first so the order also reads naturally; the picks that are
@@ -243,6 +276,22 @@ the same mechanics in a gentler form — see
    [Progress locks](#progress-locks)). The slab goes first because it is much the more
    constrained of the two — a grid has only a handful of late-wanted rectangles, while a Frozen
    box fits almost anywhere.
+12b. **Sum, and climb to the target** — the difficulty the finished level *adds up to* is measured:
+   the boxes buried out of sight **plus** every obstacle laid on top, weighted into one number on the
+   same 0–3 line the four tiers live on. Nothing used to ask this. The tier decides which mechanics and
+   relief decides how hard each bites, and both are per-mechanic decisions — so a Hard picture whose
+   belt refused the hard forms shipped with a Hard label and an Easy level underneath it, and no
+   reading anywhere said so. When the sum lands under the target, one mechanic at a time is taken back
+   to its tier's own setting — **cheapest on the conveyor first**: the two progress locks cost nothing
+   at all, then `Hidden` and `ArrowLock`, then walls and the scramble, and the two that really spend
+   belt (tunnel burial, `LinkedContainer`) last. Each rung is a **full rebuild and a re-score**, kept
+   only if the result is playable *and* the total actually went up — which is what stops it undoing
+   relief, since a rung the belt still refuses comes back trimmed and scores no higher. It never
+   overrules the designer: a mechanic switched off by hand, or forms eased on purpose with
+   **Hạ độ khó obstacle**, caps the climb instead of being compensated for. A level that still cannot
+   reach its tier ships saying how far short it came. See
+   [Difficulty](#difficulty). Untick **Tự tăng obstacle cho tới khi đủ độ khó của tranh** to ship
+   whatever relief left.
 13. **Certify** — the level is replayed **three times** — in walkthrough order, in the order the tunnel
    queues force, and in the order the links force with both halves of a pair charged to the belt at
    once — every arrow lock is checked to open after its key, its histograms are checked against the
@@ -268,9 +317,24 @@ trusted, on two separate questions:
   **tunnel whose mouth faces no box** — a mouth pointing at a wall, at another tunnel or off the edge of
   the lattice is sealed for the whole level, so the tunnel's boxes can never be had. Both are read off
   the finished layout, and a layer with either is **never shipped** (the mouth case used to go out with
-  only a warning). Small grids are where it bites: two tunnels on a four-box grid have nothing to point
-  at. Such a layer is dropped, a gentler form is tried, and if every form is unplayable the certified
-  **base grid ships instead** — a level with no mechanics beats a broken one, and the report says so.
+  only a warning). Small grids are where it bites: three tunnels on a three-box grid have nothing to
+  point at. Such a layer is dropped, a gentler form is tried, and if every form is unplayable the
+  certified **base grid ships instead** — a level with no mechanics beats a broken one, and the report
+  says so.
+
+**The placement avoids the sealed mouth rather than discovering it.** `_tunnel_slots` used to check only
+that a tunnel does not seal a *box* away; it would fill the back row with tunnels and then put the next
+one in the row in front — which is the one slot the tunnel behind it was pointing at. That tunnel then
+had nothing but tunnels on every side, and because the fault lands on the **base grid** there was
+nothing left to fall back to: **81 boxes on a 64-slot lattice refused the level outright**, telling the
+designer to raise the slot limit or shrink a picture that fitted perfectly well. `tunnels_can_release`
+now asks of every candidate whether each tunnel still has a neighbour that can hold a box, which makes
+the back rows fill in **alternating** order once one of them is solid — a full row of tunnels needs the
+row in front of it to stay boxes, so the next tunnel goes one row further in. A picture of 576 boxes now
+lays out on the same 64-slot lattice, 29 on the surface and 547 in 35 tunnels, every mouth facing a box.
+It is a **preference, not a veto**: a lattice too cramped to give every tunnel a box seats them anyway
+and lets the fault-and-relief path above handle it, which is what keeps a three-slot grid from failing
+the run outright.
 
 ### Difficulty
 
@@ -278,18 +342,71 @@ The conveyor is the level's own `piece x 9` at every difficulty, so the bite com
 rather than from the belt. The main dial is `Hidden`: a hidden box shows no color, so the player cannot
 tell whether tapping it wastes belt room.
 
-**Lấy độ khó từ ảnh** reads the tier off the picture instead, by color count:
+#### Reading it off the picture
 
-| Colors | Tier |
-| --- | --- |
-| 1–3 | Easy |
-| 4–8 | Medium |
-| 9–12 | Hard |
-| 13+ | SuperHard |
+**Lấy độ khó từ ảnh** reads the difficulty off the picture instead, and it is **two readings, not
+one** — they have different widths, so they cannot be the same number:
+
+1. **What the artwork is**, on the three-wide scale somebody says out loud: `dễ` under four colors,
+   `vừa` up to eight, `khó` from nine. This is a statement about the picture.
+2. **Which tier to build for it**, on the four-wide scale the generator uses. This is a decision.
+
+| Colors | Picture reads as | Tier to build |
+| --- | --- | --- |
+| 1–3 | dễ | Easy |
+| 4–8 | vừa | Medium |
+| 9–12 | khó | Hard |
+| 13+ | khó | SuperHard |
+
+The build scale is one step wider on purpose: past twelve colors a picture is beyond what a three-word
+scale was drawn to describe, so it goes to SuperHard rather than being clamped into Hard and pretending
+it is the same thing. A ten-color picture and a twenty-color one look equally hard; only one asks for
+SuperHard.
 
 A picture whose colors are broken into many small runs along the play order is pushed **up one tier**,
-because it forces the player to keep more colors on the belt at once. It is never pushed down: twelve
-colors in neat bands are still twelve colors to read.
+because it forces the player to keep more colors on the belt at once. That push lands on the *tier*,
+not on the band — it is about how the picture plays, not what it looks like. It is never pushed down:
+twelve colors in neat bands are still twelve colors to read. The dialog prints the whole reading beside
+the tick box (`7 màu → tranh vừa → Medium, độ vụn 32% chưa tới ngưỡng nâng nấc`), and the report prints
+it whether or not the tick box decided the tier — a designer overruling the picture still wants to know
+what it would have said.
+
+#### The difficulty a level adds up to
+
+The tier is the **target**. What the level came out at is measured separately, after every obstacle is
+on it, and reported on the same 0–3 line:
+
+```
+Độ khó tổng hợp của level dựng ra: 1.91/3 = Hard (mục tiêu 2.00 = Hard)
+  cộng từ: Hidden 2.14, xáo trộn lưới 2.00, Tunnel 0.00, Wall 2.00, ArrowLock 1.80,
+           LinkedContainer 0.67, Frozen 1.50, LargeBlock 2.00, độ trễ mở khoá 2.00
+  thang điểm neo vào chính 4 dòng độ khó: Easy 0.0 < Medium 5.8 < Hard 18.8 < SuperHard 28.5
+```
+
+Two things about that number matter. It is a **sum**: "this picture is Hard" is a statement about the
+whole level — the buried boxes *and* the obstacles together — so a shortfall in one mechanic can be
+paid for by another, and no mechanic is checked against the tier on its own. Burial (`Hidden`, the
+scramble, tunnel digging) is 4.5 of the 10 and the six obstacles the other 5.5: a picture is made hard
+mostly by what the player cannot see, and the rest by what is in the way.
+
+And there is **not one hand-picked threshold in it**. The four rows of `DIFFICULTY_PROFILES` *are* the
+scale: each dial is read against the ladder those four rows write for it, and the four totals become
+the 0/1/2/3 marks the level's own total is interpolated between. Edit a profile and the scale moves
+with it, so it cannot drift away from what a tier means. A tier's dials spent in full score exactly
+that tier, by construction.
+
+When the sum falls short, step 12b climbs it. When it cannot be closed, the shortfall is said in the
+report banner, in the report body and — for a folder run, where nobody opens a hundred reports — in the
+**Đo được** column of the batch table, marked with a `!`:
+
+```
+CHỈ ĐẠT Hard (2.43/3) so với mức SuperHard mà tranh đọc ra — thiếu 0.57 nấc,
+đã siết 6 loại obstacle mà vẫn không tới. Level vẫn chơi được — xem phần dưới.
+```
+
+That is a third verdict beside "does it win" and "does it load", and the only one of the three about
+the *design* rather than about correctness — which is why it is a warning and not an error. The level
+works; it is just not the level the picture asked for.
 
 ### Obstacle budget
 
@@ -387,6 +504,53 @@ obstacles make this harder*: the belt peak of the bare walkthrough against the b
 the obstacles force, and how much conveyor is left over at that moment. Untick the box to hold a level
 to its tier's own form; the report then says which mechanics the belt cut.
 
+Relief on its own can overshoot, and that is what **Tự tăng obstacle cho tới khi đủ độ khó của tranh**
+(beside it, also on by default) is the mirror of. Relief steps *every* dial down a whole tier at a time
+because one mechanic was refused, so a Hard picture relieved two tiers ships carrying every mechanic
+Hard bought, set the way Easy would set them, with a Hard label on it — and on level 10 at Medium, the
+level scored a flat `0.00` (Easy) while shipping as Medium. The climb reads the
+[sum](#the-difficulty-a-level-adds-up-to) and takes the overpayment back one mechanic at a time,
+cheapest on the belt first, keeping only rungs that are playable and that actually raise the total. The
+two work as a pair: relief finds a form the picture can pay for, the climb spends what the picture had
+left over. Neither can overrule a knob the designer set — a mechanic switched off, a typed count, or
+**Hạ độ khó obstacle** all cap the climb rather than being compensated for.
+
+### The picture that cannot be won at all
+
+Relief above reacts to what the belt **refuses**, and there is one case where the belt refuses nothing
+and the reaction never comes: the picture does not win on the conveyor the level ships with at all —
+the red `KHÔNG THỂ THẮNG với piece hiện tại` line at the top of the dialog, read after the repair has
+had its go, so a picture the repair saves is not covered by it. Two things put that case out of relief's
+reach. The obstacles are certified against the belt the picture *needs* rather than the one it has, on
+purpose — certifying against a belt nothing wins on would only strip the level bare and every check
+would fail for the same single reason — so the belt says no to nothing. And `Hidden` never costs a ball,
+so it is not something a belt check could cut in the first place. The result was the worst combination
+the tool could ship: a level the player runs dry, with 60% of the surface hidden and the box they need
+next scattered anywhere on the grid.
+
+**Hạ chôn box về Easy khi tranh không thắng được** (on by default, under the relief tick) splits the
+level the way the [difficulty sum](#the-difficulty-a-level-adds-up-to) already splits it — what the
+player cannot see, against what is in the way — and moves only the first half:
+
+| | On a jammed picture | |
+| --- | --- | --- |
+| **Burial** — `Hidden`, the grid scramble, the tunnel dig window | **floored at Easy** | 8% hidden instead of 60%, boxes in solution order instead of anywhere on the grid, each one handed over exactly when the picture asks for it |
+| **Obstacles on top** — wall, arrow, link, frozen, LargeBlock | **kept at the tier's form**, and still climbed | the level is not shipped bare; the score the floor gives up is made back out of these |
+
+The floor is applied **last**, after the form ladder and after every climb rung, so nothing can bury the
+level again — and the three burial rungs are skipped rather than attempted, since a rebuild that gets
+overwritten can only score the same. What the [climb](#the-difficulty-a-level-adds-up-to) does instead
+is pay for the missing burial out of the top half: on level 10 at Hard it buys back the lock timing and
+a fourth arrow, so the level keeps its content and only stops being unreadable.
+
+**What it does not do is make the picture winnable** — and no knob in the tool does. `winnable` is the
+picture measured against the belt its own `piece` buys, before a single box exists: level 10's bare
+walkthrough needs 40 balls, so on a 36-ball belt every tier and every form loses, base grid included.
+Only raising `piece` to the number in the warning, or repainting, clears it. `difficulty`, `themeId` and
+the mechanic count all stand, so the level is still the tier that was asked for, and raising `piece` and
+generating again hands the tier's own burial straight back. Untick it to bury a stuck level at its tier's
+form the way the tool used to.
+
 `ArrowLock` and `LinkedContainer` follow the difficulty like everything else. Their dialog tick boxes are
 **three-state**: left blank (the default) the tier decides, ticked the level always has that mechanic,
 unticked it never does.
@@ -431,6 +595,7 @@ one mechanic is dosed:
 | --- | --- |
 | **Hạ độ khó** | Build the level `N` notches below what the difficulty box (or the picture, under **Lấy độ khó từ ảnh**) says. A Hard picture becomes a Medium level: `difficulty`, `themeId`, the [obstacle budget](#obstacle-budget) and every dose follow the eased tier. Easy is the floor. |
 | **Dạng obstacle nhẹ đi** | Build the obstacles in a lower tier's *form* while the level stays at its own tier — `difficulty` and `themeId` do not move and the mechanic count does not change. 1 notch turns a Hard level's `stall` links into `sync` ones, points its arrows at the box opened just before, digs shallower and drops a wall. This is the deliberate version of [relief](#hard-picture-gentler-obstacles), which only reacts to what the belt refuses; the two stack, and relief starts from wherever this leaves off. |
+| **Hạ chôn box về Easy khi tranh không thắng được** | On a picture that [cannot be won on the level's own belt](#the-picture-that-cannot-be-won-at-all), floor the *burial* — `Hidden`, the scramble, the dig window — at Easy's settings and leave every obstacle on top at its tier's form, still climbed. The one case relief cannot see: the belt refuses nothing there, and `Hidden` costs no ball for it to refuse. It does not make the picture winnable — nothing does but raising `piece` — it makes the level readable until you do. |
 | **Xóc lại** | Roll the whole run `N` times on consecutive seeds and keep the best: **winnable** first, then **not stripped to the bare base grid**, then **more mechanics**, then **a harder obstacle form**, then **more conveyor left over**. Every roll is a complete, certified level — the shuffle only picks between them — and the report names the winning roll's seed, so setting that seed with one roll rebuilds it exactly. A seed that cannot be built is skipped rather than failing the run. |
 
 ### Asking for exact counts
@@ -519,7 +684,10 @@ decision, and quietly widening it would ship a level nobody asked for. And the o
 against the belt the picture *needs* rather than the one it has: certifying against a belt nothing wins on
 would only strip the level bare — no burial, no links, everything failing for the same single reason — while
 this way the moment `piece` is set to the number in the warning, the level is correct, obstacles and all, with
-no need to generate it again.
+no need to generate it again. The one thing that *is* held back on a picture like that is how deep the boxes
+are buried — see [the picture that cannot be won at all](#the-picture-that-cannot-be-won-at-all), which is the
+exception this certification would otherwise create: the belt it certifies against is wide enough to pay for
+a burial the shipped belt never could.
 
 ### Color balancing
 
@@ -714,12 +882,32 @@ certified line never waits on a lock, no lock can cost the level its proof, and 
 relief ladder the other five go through. What a lock takes is the player's **freedom to tap early** —
 the box cannot be dumped on the conveyor to clear a slot, and in a slab's case four of them go at once.
 
+**The colour read comes first.** Before either lock is placed, `read_color_supply` reads the picture
+one colour at a time: every pixel number at which the frontier asks for that colour, and how many
+balls of it the grid holds. Only the frontier colour can be spent, so this is what says whether a box
+can clear anything at all at the moment a lock would be holding it shut — and unlike `tap_progress`
+it is a fact about the *picture*, true for every order the player might tap in. Placement is chosen
+from it, and only then is a number written.
+
 **The deadlock rule.** The picture is cleared by a single frontier. If the colour the frontier wants
 has only one box left and that box is frozen, nothing clears — and because the lock opens on progress,
 nothing clearing means the lock **never opens**. That is not a hard level, it is a dead file. So a lock
-only ever goes on a colour that still has another box to serve the frontier while it is shut. The
-hand-made level 59 does exactly this by hand: all four of its Frozen boxes are Red or White, its two
-most common colours.
+only ever goes on a colour that still has another box to serve the frontier while it is shut, and
+"another box" means one that is **actually still tappable**: a spare already sitting under a slab, or
+frozen by an earlier round of the same pass, is not a spare, so the count is taken against what is
+free rather than against a head count of the colour. The hand-made level 59 does exactly this by hand:
+all four of its Frozen boxes are Red or White, its two most common colours.
+
+**Two ceilings, and the tighter one wins.** `tap_progress` bounds a count by the one order the run
+certified. `lock_reach` bounds it by the picture: the `n`-th pixel of a colour cannot clear until `n`
+balls of it have been poured, so holding some back behind a counter stops the picture at the first
+pixel it can no longer pay for, and the count may not exceed that pixel. The second bound holds for
+**every** tap order, not only the certified one, which matters because the player does not know the
+certified one. `locks_open` then asks the finished layout the same question as a fault and again as an
+internal check, the way `locks_hold` does for the certified line — a set of counters that starves a
+colour wins in the simulator and stalls for the player. On the pictures measured so far the certified
+bound is the tighter of the two every time, so this changes no number; it is what stops one from being
+written when a picture makes the two disagree.
 
 **How the number is chosen.** Two independent dials:
 
@@ -738,6 +926,15 @@ only goes on a box the winning line wants within that share of the picture after
 small window means the player spends the whole stretch before it unable to touch a box they are about
 to need. If no box on the grid falls inside the window the search widens; if none can bear the tier's
 number at all, the count is trimmed down and the report says how many locks that happened to.
+
+**The window binds the count, not just the pick.** When the search has widened — no box on the grid
+falls inside the window — honouring the tier's share alone writes a lock that is legal and useless: a
+Frozen 29 on a box the winning line does not want until 126 has been cleared long before it could cost
+anybody anything. Measured on level 10, 73% of Hard and SuperHard locks came out that way. So the
+share reads as a **floor** and `lock_count` lifts the number toward the ceiling until the gap *is* the
+window; the ceiling is still never crossed and the value is still rounded down, so the safety of the
+number is untouched. Every lock now opens within one pixel of its window (the odd-rounding step), at
+the price of the count leaving the band on grids whose boxes do not fall where the band wanted them.
 
 **Slabs.** A `LargeBlock` is `Frozen` applied to a rectangle with one shared counter, and it is
 **opaque** — the colours under it cannot be read until it lifts. It lifts in one piece, so its count is
@@ -759,6 +956,16 @@ A picture already filling its belt is being asked for enough without a ninth of 
 for half the level. The slab itself spends no conveyor — it cannot, it is derived from the winning
 line — so this is not a price being paid; it is the one measurement the level makes of itself.
 
+**The size steps down rather than shipping nothing.** A slab needs a *solid* rectangle of the lattice,
+and walls and tunnel mouths cut the lattice into pieces: measured on a 24×24 picture, SuperHard found
+no 2×2 of real boxes anywhere in 13 of 15 seeds, so the run bought `LargeBlock` and laid none — a
+mechanic *removed*, which is the budget's decision to make and not the geometry's. `block_span_ladder`
+therefore tries the sized slab first and steps down through `2×2` to a **pair** (`2×1` or `1×2`),
+which is still the thing a slab is and a Frozen box is not: two boxes behind one counter, opaque until
+it lifts, lifting together. Never a single box — that is a Frozen, and it has its own planner. With the
+ladder in place the slab dose now ships in full on every picture measured, where it previously shipped
+nothing on two of three.
+
 A slab **stacks with `Hidden` rather than replacing it**: the slab lifts, `Hidden` does not, so a box
 carrying both is dark while the slab is up and dark afterwards too. The Hidden the tier bought is left
 exactly where it was spent.
@@ -779,14 +986,18 @@ Neither lock is ever combined with something that would make its count undefined
 a frozen box, two slabs never overlap, and a `LinkedContainer` half is never frozen (the validator
 makes both halves of a pair carry identical effects, and the two halves have different ceilings).
 
-The report states what is shut away and for how long:
+The report states what is shut away, for how long, and the colour read the placement came from — the
+last line is the check by eye: a colour whose picture demand is not covered by the boxes still tappable
+is one whose lock has to open before the frontier reaches it, and the count says whether it does.
 
 ```
 Khoá theo tiến độ: giữ 63/270 bóng (23% bức tranh)
   Frozen: 3/3 box (mục tiêu 15% box mặt ngoài, mở ở 10%-20% bức tranh)
-  slot (x, y) → count, còn dư trước lúc cần: (1, 4) → 29 dư 61, (3, 3) → 37 dư 35
+  slot (x, y) → count, còn dư trước lúc cần: (3, 4) → 29 dư 97, (3, 3) → 37 dư 35
   LargeBlock: 1/1 slab (mục tiêu mở ở 30%, 45% bức tranh)
-  ô lưới (x, y, w, h) → count, che, còn dư: (0, 15, 6, 6) → 81 che 4 box dư 27
+  ô lưới (x, y, w, h) → count, che, còn dư: (0, 12, 6, 6) → 49 che 4 box dư 41
+  màu bị khoá → pixel tranh cần / bóng trên lưới, box còn tap được: 3: 81/81, 6 box,
+  7: 108/108, 9 box, 12: 18/18, 1 box
 ```
 
 ### Saved config (`genlv{level}.json`)
@@ -812,6 +1023,157 @@ difficulty decide" — which is not the same as `0`, which switches that knob of
 obstacle toggles as well: `useArrowLock` and `useLinkedContainer` are `null`, `true` or `false`, matching
 the three states of their tick boxes. An unknown key is ignored and a missing one keeps its default, so
 presets survive new knobs being added.
+
+### Auto Gen Folder (whole folder at once)
+
+**Auto Gen Folder**, beside **Auto Gen Box** under the Box Ball Grid, runs the same generator over every
+picture in one folder instead of the level in hand. The source folder holds one of two things, and both
+are read the same way:
+
+- **A folder of art** (`*.png`, `*.jpg`, `*.jpeg`, `*.bmp`, `*.tga`, `*.gif`, `*.webp`). Each image is
+  sampled into a Pixel Grid exactly the way **Import Image** does, at the width, height and alpha
+  threshold set in the dialog, and becomes a brand-new level file.
+- **A folder of level files** (`*.json`). The picture is read off the level already in the file, so a
+  folder of hand-painted levels can be (re)generated in one pass. `genlv*.json` presets sitting in the
+  same folder are never mistaken for levels.
+- **A folder of the game's own exports** (`*.json` again, but not in this editor's format). These write
+  their picture under `pixelGrid.colors` rather than `colorIds`, or under the older `pixelBoard`/`map`
+  shapes, with colour ids past the end of `ItemColor` and a `gridBoard` of box capacities this editor does
+  not build. When the current reader refuses such a file, the picture is read the way **Import Old JSON**
+  reads it — same importer, so the same palette folding onto free colour ids — and handed back to the
+  current reader inside its own document, so the level's *own* `level`, `time`, `piece`, tier and theme are
+  still parsed by the reader that knows those fields. The old boxes are deliberately dropped: Auto Gen Box
+  is about to lay a fresh box grid anyway. The row says `đọc theo định dạng cũ`, because the palette does
+  not survive whole.
+
+Both kinds may sit in the same folder; sub-folders are left alone.
+
+**Which level each file becomes.** The number in the file name: `7.png` and `7.json` both build level 7,
+`7.2.png` its category variant, and `4.3mau.json` level 4 — a name that *opens* with a number keeps it
+however it goes on to describe itself, so an exporter's label (`3mau` = three colours) is read and dropped
+rather than mistaken for a category. A name with no number at all (`cat.png`, and `2024art.png`, where the
+digits run straight into the word) takes the next free number from **Level bắt đầu**, skipping every number
+the folder already claims. A *level file* is the exception — it
+carries its own `level`/`category` inside, and that is what the output file is named after, whatever the
+file on disk is called. Two sources landing on the same level: the first wins, the second is reported as
+`bỏ qua` rather than silently overwriting it.
+
+**Which knobs each level gets**, in order:
+
+1. `genlv{level}.json` in the config folder, when **Ưu tiên cấu hình** is ticked and that level has one.
+   A preset is taken whole — it is the exact set of knobs that level was tuned with, seed included, so
+   the file it rebuilds is the file it built last time.
+2. Otherwise the parameters from **Tham số Auto Gen Box…**, which opens the very dialog the single-level
+   action uses. With **Dùng độ khó ghi trong từng file level** ticked, a level file's own difficulty
+   replaces the dialog's tier so a mixed folder keeps its easy/hard spread.
+3. Over the top of either: the two run-wide knobs on the folder form — the tier read off each picture
+   and the roll count — which are described [below](#the-workbench-window) and are the only things that
+   outrank a preset.
+
+With **Lưu cấu hình** ticked, every generated level writes its preset back — including the seed the run
+actually settled on, which is the only part of a run the dialog does not hold. That is what makes a
+folder reproducible: run it again and the same files come out.
+
+#### The workbench window
+
+**Auto Gen Folder** opens a window of its own, because a folder run is work a designer sits with rather
+than a question to answer once:
+
+- **Nguồn trong folder** lists every source with the level it will become (`(tự đánh)` marks a number
+  the run assigned), the toolbar's ◀ ▶ walk the list, and **Làm mới** re-reads the folder after files
+  change on disk.
+- **Bức tranh của dòng đang chọn** draws that source's picture — a level file's own Pixel Grid, or an
+  image sampled at the width, height and alpha the settings ask for, so a bad sampling size is visible
+  before anything is generated. Under it: size, painted pixels and colour count.
+- **Chỉ sinh các dòng đang chọn** runs only the highlighted rows, for regenerating two levels without
+  touching the other fifty.
+- The run happens on a **worker thread**: the progress bar and label say `(k/n) đang sinh <file>`, the
+  window stays usable, and the toolbar button turns into **⏹ Dừng**. Closing the window mid-run asks
+  first, then stops and waits for the thread.
+- **Kết quả** is the log: one row per source, coloured by outcome, with the source rows marked as each
+  finishes. **Xoá log** clears it, **Xuất CSV** writes it out, and double-clicking a row opens that
+  generated level in the editor (with the usual unsaved-changes prompt).
+
+**Gen Folder (nhanh)** on the main toolbar is the same run without the workbench: one dialog, one
+progress bar, one report table.
+
+**While it runs** a progress dialog names the file being generated; **Cancel** stops between levels and
+keeps everything generated so far. Afterwards a report table lists every source file with its level,
+result, difficulty, box/hidden/tunnel/wall counts, the two progress locks (**Frozen** and **Slab**), the
+belt it needs against the belt it has, its seed and the output file, plus the balancing or jam note for
+that level. A jam does not withhold the file — the single-level action ships an unwinnable grid too — it
+is flagged `KẸT` in orange so it can be found and fixed. **Xuất CSV** writes the table out (UTF-8 with
+BOM, so Excel opens the Vietnamese columns correctly).
+
+#### What a folder run says about the obstacles
+
+A folder run is the single-level generator called once per file, so every rule the single-level action
+is held to holds here as well: the picture is read per colour before a lock is placed, a lock's number
+is bounded by both the certified line and the picture, the box grid is certified with no mechanics on it
+before any are laid, and a mechanic layer that would cost the level its proof is stepped down or dropped
+rather than shipped. There is nothing to switch on.
+
+What a folder run adds is **scale**, and with it the one thing the single-level report never had to
+worry about: nobody opens a hundred reports. So the three outcomes that make a level quietly different
+from the tier that was asked for are on the row and in the headline:
+
+- **`obs hạ N bậc xuống mức X để level còn qua được`** — the relief ladder stepped the obstacle forms
+  down. The level is still the tier it says it is, but its mechanics bite at gentler settings. Counted
+  as `N hạ bậc obs` in the headline. This is common on small pictures: six 9×9 pictures asked for at
+  SuperHard all shipped Easy-form obstacles and no locks at all, which used to be invisible.
+- **`obs không đặt được cái nào, ship lưới base trần`** — every form faulted, so the certified base grid
+  went out with no mechanics on it. Counted as `N không có obs`. This is the loudest thing a row can
+  say, and before it was on the report a folder of these looked like a folder of clean runs.
+- **`chôn box hạ về Easy (box ẩn N) vì tranh chưa thắng được — nâng piece lên P là trả lại mức X`** —
+  the picture [cannot be won on the belt its level ships with](#the-picture-that-cannot-be-won-at-all),
+  so its burial was floored while every obstacle on top kept its tier's form. Counted as
+  `N hạ chôn box về Easy (nâng piece)`, and always a subset of the `N kẹt` beside it — the actionable
+  subset: each of these rows is a picture whose `piece` is too small, and the row names the number that
+  fixes it. This is *the* folder-scale case, because a hundred pictures scaled off one template all
+  inherit that template's `piece`, and one wrong number there buries the whole batch at its tier's depth.
+
+The **Ẩn** column carries a `↓` on exactly those rows, so a batch can be scanned rather than read: a `2 ↓`
+beside a SuperHard label is a picture that needs a wider `piece`, not a level that was built wrong. The
+**Frozen** and **Slab** columns are the same signal at the mechanic level: a `0` where the tier bought one
+means that lock found nowhere to land on that picture.
+
+The generator's knobs are not duplicated in the folder form — **Tham số Auto Gen Box…** opens the very
+dialog the single-level action uses, so every tick above is available per batch and round-trips through
+`genlv{level}.json` like the rest. Two of them are called out in the summary line beside the button when
+they are **off**, because nothing else in the report would show it: `KHÔNG tự tăng độ khó` and
+`KHÔNG hạ chôn box khi tranh kẹt`.
+
+Two knobs are lifted out of that dialog and onto the folder form itself, because they are the two the
+folder run has to answer *per level* and nobody is going to open the params dialog a hundred times to do
+it. Both are on by default, so **Sinh cả folder** is the whole operation: press it and every picture gets
+its own tier and ten rolls.
+
+**Lấy độ khó thẳng từ ảnh cho MỌI level trong folder** is the tier, read off each picture the way the
+params dialog's own *Lấy độ khó từ ảnh* does for a single level — colour count first, a notch up for a
+fragmented picture — so one folder of art comes out as a spread of Easy/Medium/Hard/SuperHard rather than
+a hundred levels wearing one number somebody typed once. Ticked, it **outranks `genlv{level}.json` and
+the level file's own difficulty** both: a designer who says "take the tier off the picture, for every
+level" is not asking to be overruled by a number an earlier run wrote back. The rest of the preset still
+stands — only the tier moves, and the doses left on Auto follow it there — and the preset written back
+records *that the tier came from the picture*, so the next run over the same folder rebuilds the same
+level. Untick it and the tier falls back to the old order: the level's preset, then the difficulty
+written in the level file, then the number in the params dialog.
+
+**Xóc lại cho cả folder** is the roll count, and it defaults to **10 lần**: rolling is what makes an
+unattended run worth trusting, and a folder run is the one place nobody is watching each level to re-roll
+it by hand. `Theo tham số` (0) hands the count back to each level's preset or the params dialog; any
+number applies to **every level in the run** and, like the tier box above, **outranks a per-level
+preset**. Why it is allowed to: it is the run's *cost* dial — N rolls times a hundred levels is the whole
+wall-clock of a batch — so it belongs to the run rather than to any one picture; and unlike the obstacle
+doses it changes nothing about what a level *is*, because every roll is a complete certified level and
+the shuffle only picks between them, so forcing it cannot produce a grid nobody chose. It matters because
+`write_presets` is on by default: after one batch run every level has a preset carrying that run's count,
+so a dial that deferred to presets would be dead in the workflow it exists for. The preset written back
+records the count the run used and the seed of the roll that won.
+
+The source, output and config folders are remembered in `settings.json` (`autogen_batch_source_dir`,
+`autogen_batch_output_dir`, `autogen_config_dir`). Generating into the folder of the level currently
+open reloads it on screen when it has no unsaved edits, and warns instead of discarding them when it has.
 
 ### What the art has to look like
 

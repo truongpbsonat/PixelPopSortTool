@@ -33,6 +33,7 @@ from pixel_level_tool.domain.level_models import (
     FrozenCellEffectData,
     LargeBlockObstacleData,
 )
+from pixel_level_tool.services import box_autogen
 from pixel_level_tool.services.box_autogen import (
     BALLS_PER_BOX,
     BLOCK_BOX_BUDGET,
@@ -51,10 +52,15 @@ from pixel_level_tool.services.box_autogen import (
     auto_generate_boxes,
     block_room_scale,
     block_span_for,
+    block_span_ladder,
     format_report,
+    lock_count,
+    lock_reach,
     locks_hold,
+    locks_open,
     plan_block_count,
     plan_frozen_count,
+    read_color_supply,
     round_lock,
     slab_rectangles,
 )
@@ -71,6 +77,7 @@ from tests.test_box_autogen import (
     assert_valid,
     banded_level,
     level_10,
+    varied_level,
 )
 
 # Locks only ever land when the tier bought them, so the tests that are about
@@ -256,6 +263,247 @@ def test_a_frozen_box_always_has_another_box_of_its_colour_to_stand_in():
             )
 
 
+# --------------------------------------------------------------------------- #
+# The picture-derived half of the safety property
+# --------------------------------------------------------------------------- #
+# `locks_hold` proves the *certified line* never waits on a lock. These prove no
+# other line can either: the numbers are also bounded by what the picture can be
+# paid for at all with the locked colours held back, which is a fact about the
+# picture rather than about one tap order.
+def _sequence_of(result):
+    return BoardState.from_pixel_grid(result.level.pixel_grid).sequence
+
+
+@pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
+def test_no_tap_order_at_all_can_stall_on_the_locks(difficulty):
+    """The order-independent invariant, and the one a real player meets."""
+    result = generated(difficulty, **BOTH_LOCKS)
+    assert (
+        locks_open(_sequence_of(result), result.solution.order, result.frozen, result.slabs)
+        == []
+    )
+
+
+def test_locks_open_catches_a_colour_starved_by_its_own_locks():
+    """A pair of counters the certified line clears and no other order can.
+
+    Freezing every box of a colour at a number past where the picture first
+    asks for it is exactly the dead file the rule exists for: the frontier wants
+    the colour, no box of it can be tapped, so nothing clears and the counters
+    never move.
+    """
+    result = generated(**FROZEN_ON)
+    order = result.solution.order
+    sequence = _sequence_of(result)
+    color = sequence[0]
+    everything = [
+        replace(result.frozen[0], order_index=index, color=color, count=len(sequence))
+        for index, spec in enumerate(order)
+        if spec.color == color
+    ]
+    assert everything, "the fixture has to have a box of the frontier colour"
+    complaints = locks_open(sequence, order, everything, [])
+    assert complaints and "tranh dừng ở pixel" in complaints[0]
+
+
+def test_the_colour_read_happens_before_any_lock_and_matches_the_picture():
+    """Placement is chosen from this read, so it has to describe the picture exactly."""
+    result = generated(**BOTH_LOCKS)
+    sequence = _sequence_of(result)
+    supply = read_color_supply(sequence, result.solution.order)
+    assert result.color_supply == supply
+    for color, info in supply.items():
+        assert info.wanted == tuple(
+            pixel for pixel, value in enumerate(sequence) if value == color
+        )
+        # Every colour is a whole number of boxes, so supply and demand match.
+        assert info.balls == info.pixels
+        assert all(
+            sequence[pixel] == color for pixel in info.wanted
+        )
+
+
+def test_a_lock_is_never_written_past_what_the_picture_can_pay_for():
+    """`lock_reach` is a ceiling, so every count written has to sit under it."""
+    for difficulty in ALL_DIFFICULTIES:
+        result = generated(difficulty, **BOTH_LOCKS)
+        sequence = _sequence_of(result)
+        supply = read_color_supply(sequence, result.solution.order)
+        total = len(sequence)
+        shut: dict[int, int] = {}
+        for slab in result.slabs:
+            reach = lock_reach(supply, result.solution.order, shut, slab.covered, total)
+            assert slab.count <= reach
+            for index in slab.covered:
+                shut[index] = slab.count
+        for lock in result.frozen:
+            reach = lock_reach(
+                supply, result.solution.order, shut, (lock.order_index,), total
+            )
+            assert lock.count <= reach
+            shut[lock.order_index] = lock.count
+
+
+def test_lock_reach_stops_at_the_pixel_the_held_back_balls_were_needed_for():
+    """One colour, one box short: the picture stops where its supply runs out."""
+    order = [BoxSpec(1, 9), BoxSpec(1, 9), BoxSpec(2, 9)]
+    sequence = tuple([1] * 9 + [2] * 9 + [1] * 9)
+    supply = read_color_supply(sequence, order)
+    # Shut one of the two colour-1 boxes and the picture can still pay the first
+    # nine colour-1 pixels, but not the tenth - which sits at pixel 18.
+    assert lock_reach(supply, order, {}, (0,), len(sequence)) == 18
+    # Shut the colour-2 box and the picture stops at its very first pixel.
+    assert lock_reach(supply, order, {}, (2,), len(sequence)) == 9
+    # Shut nothing under the lock's colour and nothing constrains it.
+    assert lock_reach(supply, order, {}, (), len(sequence)) == len(sequence)
+
+
+# --------------------------------------------------------------------------- #
+# What happens when a lock layer is unplayable after all
+# --------------------------------------------------------------------------- #
+# The run's order is: certify the box grid with no mechanics on it, then lay the
+# obstacles on that proven grid, then read the result rather than trust it. A
+# layer that faults is never shipped - the form steps down, and if every form
+# faults the bare base grid goes out. `test_base_grid` covers that path for a
+# tunnel fault; these cover it for a lock fault, which is the one no belt check
+# and no replay can see.
+def _fault_locks(monkeypatch, when):
+    """Make `locks_open` condemn any layer carrying locks that ``when`` picks out."""
+    real = box_autogen.locks_open
+
+    def patched(sequence, order, frozen, slabs):
+        if (frozen or slabs) and when(frozen, slabs):
+            return ["thử nghiệm: một màu bị chính khoá của nó bỏ đói"]
+        return real(sequence, order, frozen, slabs)
+
+    monkeypatch.setattr(box_autogen, "locks_open", patched)
+
+
+def test_a_lock_layer_that_starves_a_colour_is_never_shipped(monkeypatch):
+    """Every form condemned, so the bare certified grid ships instead of a dead file."""
+    clean = generated(int(LevelDifficulty.Hard), **BOTH_LOCKS)
+    assert clean.frozen and clean.slabs, "the fixture has to carry both locks"
+
+    _fault_locks(monkeypatch, lambda frozen, slabs: True)
+    result = generated(int(LevelDifficulty.Hard), **BOTH_LOCKS)
+
+    assert result.obstacle_relief.base, "every form faulted, so the base grid ships"
+    assert result.obstacle_free
+    assert result.frozen == [] and result.slabs == []
+    assert frozen_cells(result.level) == [] and slab_obstacles(result.level) == []
+    # The point of the fallback: a level with no mechanics beats a broken one.
+    assert result.winnable and result.valid
+    assert_valid(result.level)
+
+
+def test_a_lock_fault_steps_the_obstacle_form_down_before_giving_up(monkeypatch):
+    """Relief first, base grid only as the floor - the obstacles are reduced, not dropped."""
+    _fault_locks(
+        monkeypatch,
+        lambda frozen, slabs: max([lock.count for lock in frozen] or [0]) > 20,
+    )
+    result = generated(int(LevelDifficulty.Hard), **BOTH_LOCKS)
+    relief = result.obstacle_relief
+
+    assert relief.faulted, "the injected fault has to be recorded"
+    assert relief.form < relief.difficulty, "a gentler form should have been tried"
+    assert not relief.base, "a gentler form was playable, so it ships"
+    assert result.frozen, "stepping down keeps the mechanic, at a gentler number"
+    assert result.winnable and result.valid
+    assert locks_open(
+        _sequence_of(result), result.solution.order, result.frozen, result.slabs
+    ) == []
+
+
+# --------------------------------------------------------------------------- #
+# Does the lock actually bite, or is it decoration?
+# --------------------------------------------------------------------------- #
+# A count is safe as long as it sits under the ceiling, and useless as soon as
+# it sits far under it: the player clears the counter long before the winning
+# line wants the box, so the obstacle is on the grid and costs nothing. The
+# tier's window is the statement of how close is close enough.
+def test_a_lock_is_lifted_toward_its_ceiling_when_the_tier_mark_is_too_early():
+    """The tier's share is a floor, not an exact mark, or the lock is decoration."""
+    # Gap of 100 against a window of 20: the count comes up to ceiling - window.
+    assert lock_count(target=29, ceiling=129, window=20, rounding="none") == 109
+    # Gap already inside the window: the tier's mark stands.
+    assert lock_count(target=120, ceiling=129, window=20, rounding="none") == 120
+    # The ceiling is never crossed, whatever the window says.
+    assert lock_count(target=200, ceiling=129, window=20, rounding="none") == 129
+    assert lock_count(target=29, ceiling=129, window=999, rounding="none") == 29
+    # Still rounded down, and still nothing at all below one.
+    assert lock_count(target=29, ceiling=130, window=20, rounding="odd") == 109
+    assert lock_count(target=5, ceiling=0, window=20, rounding="none") == 0
+
+
+@pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
+def test_every_lock_bites_inside_the_window_its_tier_asked_for(difficulty):
+    """No lock opens more than a window (plus the odd-rounding step) too early."""
+    result = generated(difficulty, **BOTH_LOCKS)
+    total = len(_sequence_of(result))
+    window = round(result.profile.lock_window * total)
+    for lock in result.frozen:
+        assert lock.slack <= window + 1, (
+            f"Frozen {lock.count} opens {lock.slack} pixels before the line wants "
+            f"box {lock.order_index}, window is {window}"
+        )
+    for slab in result.slabs:
+        assert slab.slack <= window + 1, (
+            f"slab {slab.count} opens {slab.slack} pixels early, window is {window}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# A bought slab has to ship something
+# --------------------------------------------------------------------------- #
+def test_the_slab_size_steps_down_rather_than_shipping_nothing():
+    """Walls and tunnels cut the lattice up; a pair is still a slab, zero is not."""
+    profile = DIFFICULTY_PROFILES[int(LevelDifficulty.Hard)]
+    roomy = block_span_ladder(BLOCK_WIDE_ROOM, profile)
+    assert roomy[0] == BLOCK_WIDE_SPAN, "the biggest size that fits is tried first"
+    assert profile.block_span in roomy, "the tier's own size is on the ladder"
+    tight = block_span_ladder(0, profile)
+    assert tight[0] == profile.block_span
+    for ladder in (roomy, tight):
+        assert len(set(ladder)) == len(ladder), "no size is tried twice"
+        assert ladder[-1] in {(2, 1), (1, 2)}, "the last rung is a pair"
+        # Never a single box: that is a Frozen, and it has its own planner.
+        assert all(span_x * span_y >= 2 for span_x, span_y in ladder)
+
+
+@pytest.mark.parametrize("difficulty", [int(LevelDifficulty.Hard), int(LevelDifficulty.SuperHard)])
+def test_a_fragmented_grid_still_lays_every_slab_it_was_budgeted(difficulty):
+    """The regression: walls left no 2x2 anywhere and the run shipped no slab at all."""
+    level = varied_level(24, 24, 6, 5)
+    for seed in range(1, 6):
+        result = auto_generate_boxes(
+            level, AutoGenOptions(difficulty=difficulty, seed=seed, **BOTH_LOCKS)
+        )
+        assert len(result.slabs) == result.slab_dose, (
+            f"seed {seed} was budgeted {result.slab_dose} slab(s) and laid "
+            f"{len(result.slabs)}"
+        )
+        for slab in result.slabs:
+            assert len(slab.covered) == slab.span_x * slab.span_y >= 2
+
+
+def test_a_spare_already_shut_away_by_a_slab_does_not_count_as_a_spare():
+    """The head count was the hole: a spare under a slab cannot serve the frontier."""
+    result = generated(**BOTH_LOCKS)
+    covered = {index for slab in result.slabs for index in slab.covered}
+    for lock in result.frozen:
+        free = sum(
+            1
+            for index, spec in enumerate(result.solution.order)
+            if spec.color == lock.color
+            and index not in covered
+            and index != lock.order_index
+        )
+        assert free >= 1, (
+            f"colour {lock.color} was frozen with every spare already shut away"
+        )
+
+
 def test_no_slab_covers_a_box_that_is_also_frozen():
     """Two counters over one box is a lock with no defined opening moment."""
     result = generated(**BOTH_LOCKS)
@@ -275,9 +523,17 @@ def test_slabs_never_overlap_each_other():
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
 def test_adding_the_locks_does_not_move_the_conveyor_at_all(difficulty):
-    """A lock is derived from the play order, so it cannot change what that order costs."""
-    without = generated(difficulty, frozen_boxes=0, blocks=0)
-    with_locks = generated(difficulty, **BOTH_LOCKS)
+    """A lock is derived from the play order, so it cannot change what that order costs.
+
+    The climb is off for this one, and it has to be: it reacts to the difficulty
+    the *whole* level adds up to, so taking the locks away lets it harden
+    something else to make up the difference - and then the two runs differ in
+    more than the locks and there is nothing left to compare. What is being
+    measured here is what a lock costs in stages 11-12, not what the run does
+    about a level that came out gentle.
+    """
+    without = generated(difficulty, frozen_boxes=0, blocks=0, difficulty_climb=False)
+    with_locks = generated(difficulty, difficulty_climb=False, **BOTH_LOCKS)
     assert with_locks.played_belt == without.played_belt
     assert with_locks.play_groups == without.play_groups
     assert with_locks.solution.order == without.solution.order

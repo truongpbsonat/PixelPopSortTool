@@ -197,3 +197,66 @@ def test_tunnel_source_histogram_uses_stored_cell_colors():
     level = PixelLevelData(grid_cells=[tunnel])
 
     assert level.source_histogram() == {int(ItemColor.Red): 3, int(ItemColor.Green): 3}
+
+
+# --------------------------------------------------------------------------- #
+# A pixelGrid this format cannot read
+# --------------------------------------------------------------------------- #
+# Reading one as a *blank* picture is the worst thing to do with it: every caller
+# downstream then complains about an empty picture instead of a file it could not
+# read. A hand-made 25x25 template whose pixels sat under "colors" made Auto Gen
+# Box say "Paint the pixel grid before generating boxes" about a fully painted
+# level, and a folder run turned that into one "sinh box thất bại" row per file.
+def _sized_grid_doc(pixel_grid: dict) -> dict:
+    return {"pixelGrid": pixel_grid, "boxGrid": {}, "level": 21}
+
+
+def test_a_pixel_grid_that_declares_a_size_must_carry_that_many_pixels():
+    import pytest
+
+    from pixel_level_tool.services.level_serializer import LevelSerializationError
+
+    with pytest.raises(LevelSerializationError) as caught:
+        level_from_dict(_sized_grid_doc({"width": 25, "height": 25, "colorIds": []}))
+
+    assert "25x25 = 625 pixel" in str(caught.value)
+    assert "0 colorIds" in str(caught.value)
+
+
+def test_the_error_names_the_key_the_pixels_are_actually_under():
+    import pytest
+
+    from pixel_level_tool.services.level_serializer import LevelSerializationError
+
+    with pytest.raises(LevelSerializationError) as caught:
+        level_from_dict(
+            _sized_grid_doc({"width": 5, "height": 5, "colors": [7] * 25})
+        )
+
+    message = str(caught.value)
+    assert "'colors'" in message, "the fix is a rename, so the key has to be named"
+    assert "colorIds" in message
+
+
+def test_a_blank_canvas_of_a_real_size_still_round_trips():
+    """The check must not reject the tool's own output: a blank grid is written full.
+
+    `save_level` writes width*height EMPTY_COLOR_IDs for an unpainted canvas
+    rather than omitting the key, which is what makes the rule above safe.
+    """
+    blank = PixelLevelData(pixel_grid=PixelGridData(25, 25))
+
+    document = level_to_dict(blank)
+    assert len(document["pixelGrid"]["colorIds"]) == 625
+
+    back = level_from_dict(document)
+    assert back.pixel_grid.width == 25 and back.pixel_grid.height == 25
+    assert not back.pixel_grid.histogram(), "still blank, just not malformed"
+
+
+def test_a_grid_with_no_size_is_left_alone():
+    """A brand-new level has no size and no pixels, and that is not an error."""
+    level = level_from_dict(_sized_grid_doc({"width": 0, "height": 0, "colorIds": []}))
+
+    assert level.pixel_grid.width == 0
+    assert level.pixel_grid.color_ids == []

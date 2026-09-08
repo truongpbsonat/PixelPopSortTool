@@ -73,6 +73,7 @@ def _preset() -> AutoGenOptions:
         lock_rounding="five",
         shuffle_obstacles=False,
         obstacle_relief=False,
+        jam_relief=False,
         repair_picture=False,
         ease_difficulty=1,
         ease_obstacles=2,
@@ -228,6 +229,23 @@ def test_obstacle_relief_is_on_by_default_and_can_be_switched_off(qtbot):
 
     dialog.obstacle_relief.setChecked(False)
     assert dialog.options().obstacle_relief is False
+
+
+def test_jam_relief_is_on_by_default_and_can_be_switched_off(qtbot):
+    """Its own tick because the belt check above cannot reach the case it covers.
+
+    A picture that does not win on the level's own belt refuses nothing, so
+    relief never fires on it and the burial would ship at the tier's own form on
+    a level nobody can finish.
+    """
+    dialog = AutoGenBoxDialog(int(LevelDifficulty.SuperHard))
+    qtbot.addWidget(dialog)
+
+    assert dialog.jam_relief.isChecked()
+    assert dialog.options().jam_relief is True
+
+    dialog.jam_relief.setChecked(False)
+    assert dialog.options().jam_relief is False
 
 
 def test_dialog_enables_the_arrow_and_link_knobs_when_the_obstacle_is_ticked(qtbot):

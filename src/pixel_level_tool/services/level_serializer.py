@@ -324,10 +324,42 @@ def _pixel_grid_from_dict(pixel_grid_data: object) -> PixelGridData:
         raise UnsupportedScopeError("Pixel modifiers are outside Pixel-only tool scope.")
     if pixel_grid_data.get("obstacles") not in (None, []):
         raise UnsupportedScopeError("Pixel obstacles are outside Pixel-only tool scope.")
+    width = int(pixel_grid_data.get("width", 0))
+    height = int(pixel_grid_data.get("height", 0))
+    color_ids = [int(value) for value in pixel_grid_data.get("colorIds", [])]
+    # A grid that declares a size has to carry that many pixels. `save_level`
+    # always writes width*height of them - a blank canvas is 625 EMPTY_COLOR_IDs,
+    # not an omitted key - so a short or missing `colorIds` beside a real size is
+    # never this format, and reading it as a blank picture is the worst thing to
+    # do with it: every caller downstream then reports an empty *picture* rather
+    # than a file it could not read. Auto Gen Box said "Paint the pixel grid
+    # before generating boxes" about a fully painted 25x25 level, and a folder
+    # run turned that into one "sinh box thất bại" row per file.
+    if width > 0 and height > 0 and len(color_ids) < width * height:
+        renamed = [
+            key
+            for key, value in pixel_grid_data.items()
+            if key != "colorIds"
+            and isinstance(value, list)
+            and len(value) == width * height
+            and all(isinstance(entry, int) for entry in value)
+        ]
+        raise LevelSerializationError(
+            f"pixelGrid ghi {width}x{height} = {width * height} pixel nhưng chỉ có "
+            f"{len(color_ids)} colorIds"
+            + (
+                f" — số pixel đang nằm dưới key {renamed[0]!r}."
+                f" Đổi tên {renamed[0]!r} thành 'colorIds' là đọc được."
+                if renamed
+                else " — file không đúng format level của tool này."
+                " (Convert File/Convert All chỉ đổi được layout $type cũ, cũng đọc"
+                " colorIds, nên không sửa được trường hợp này.)"
+            )
+        )
     return PixelGridData(
-        width=int(pixel_grid_data.get("width", 0)),
-        height=int(pixel_grid_data.get("height", 0)),
-        color_ids=[int(value) for value in pixel_grid_data.get("colorIds", [])],
+        width=width,
+        height=height,
+        color_ids=color_ids,
         modifiers=list(pixel_grid_data.get("modifiers") or []),
         obstacles=list(pixel_grid_data.get("obstacles") or []),
     )
