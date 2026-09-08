@@ -88,6 +88,16 @@ class AutoGenFolderForm(QWidget):
         self.pixel_height = QSpinBox()
         self.pixel_height.setRange(1, 256)
         self.pixel_height.setValue(16)
+        # On by default: a folder of art is a folder of *different* pictures, and
+        # forcing one size onto all of them is what squashes a 40x24 piece into a
+        # square. The two spin boxes above stay as the cap - see `image_grid_size`.
+        self.size_from_image = QCheckBox("Lấy kích thước từ chính ảnh, hai ô trên là mức tối đa")
+        self.size_from_image.setChecked(True)
+        self.size_from_image.setToolTip(
+            "Ảnh nhỏ hơn mức tối đa giữ nguyên kích thước gốc, không lấy mẫu lại.\n"
+            "Ảnh lớn hơn được thu nhỏ vừa khung mà vẫn giữ đúng tỷ lệ.\n"
+            "Bỏ tick thì mọi ảnh đều bị ép về đúng số đã gõ."
+        )
         self.alpha = QSpinBox()
         self.alpha.setRange(0, 255)
         self.alpha.setValue(1)
@@ -101,6 +111,7 @@ class AutoGenFolderForm(QWidget):
         self.piece.setToolTip("Số box băng chuyền ghi vào level mới dựng từ ảnh")
         picture_form.addRow("Pixel Grid rộng", self.pixel_width)
         picture_form.addRow("Pixel Grid cao", self.pixel_height)
+        picture_form.addRow("", self.size_from_image)
         picture_form.addRow("Ngưỡng alpha", self.alpha)
         picture_form.addRow("Thời gian (giây)", self.time)
         picture_form.addRow("Piece", self.piece)
@@ -378,6 +389,7 @@ class AutoGenFolderForm(QWidget):
         return dict(
             image_width=self.pixel_width.value(),
             image_height=self.pixel_height.value(),
+            image_size_from_source=self.size_from_image.isChecked(),
             alpha_threshold=self.alpha.value(),
             image_time=self.time.value(),
             image_piece=self.piece.value(),

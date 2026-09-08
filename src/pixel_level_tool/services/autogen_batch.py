@@ -50,7 +50,11 @@ from pixel_level_tool.services.box_autogen import (
     balance_summary,
     jam_headline,
 )
-from pixel_level_tool.services.image_importer import ImageImportError, import_image_to_color_ids
+from pixel_level_tool.services.image_importer import (
+    ImageImportError,
+    image_grid_size,
+    import_image_to_color_ids,
+)
 from pixel_level_tool.services.legacy_level_importer import (
     LegacyLevelImportError,
     legacy_pixel_grid_from_dict,
@@ -362,7 +366,16 @@ def build_level_from_image(
     alpha_threshold: int = 1,
     time: int = 60,
     piece: int = 5,
+    size_from_image: bool = False,
 ) -> PixelLevelData:
+    """One level built from one image, sampled at ``width`` x ``height``.
+
+    ``size_from_image`` turns those two into a **cap** instead of the size: each
+    picture then asks for its own grid and the pair only stops a large one from
+    running away with the run. See :func:`image_grid_size`.
+    """
+    if size_from_image:
+        width, height = image_grid_size(source.path, width, height)
     color_ids = import_image_to_color_ids(source.path, width, height, alpha_threshold)
     return PixelLevelData(
         level=source.level,
@@ -427,6 +440,7 @@ def generate_folder(
     *,
     image_width: int = 16,
     image_height: int = 16,
+    image_size_from_source: bool = False,
     alpha_threshold: int = 1,
     image_time: int = 60,
     image_piece: int = 5,
@@ -508,6 +522,7 @@ def generate_folder(
                     alpha_threshold=alpha_threshold,
                     time=image_time,
                     piece=image_piece,
+                    size_from_image=image_size_from_source,
                 )
             else:
                 level, legacy = load_level_source(

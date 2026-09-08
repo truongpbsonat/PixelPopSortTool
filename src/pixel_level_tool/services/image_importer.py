@@ -9,6 +9,48 @@ class ImageImportError(ValueError):
     pass
 
 
+def image_grid_size(
+    path: str | Path, max_width: int, max_height: int
+) -> tuple[int, int]:
+    """The pixel-grid size one image asks for, fitted inside a cap.
+
+    A folder run used to sample every image at the one size typed into the form,
+    which is right for a folder of photographs and wrong for a folder of pixel
+    art: a 29x29 piece of art forced through a 16x16 grid loses a third of its
+    rows and columns, and a 40x24 one comes back square. The size is a property
+    of each picture, so it is read off each picture.
+
+    An image already inside the cap keeps its **own size exactly** and nothing is
+    resampled - the grid is the art, cell for cell. A larger one is scaled by the
+    tighter of the two ratios, so its shape survives the fit rather than being
+    squashed into the cap's aspect. The cap is what keeps a 4000x3000 photograph
+    from asking for a twelve-million-cell grid.
+    """
+    if max_width <= 0 or max_height <= 0:
+        raise ImageImportError("Giới hạn chiều rộng và chiều cao phải lớn hơn 0.")
+    source_path = Path(path)
+    if not source_path.exists():
+        raise ImageImportError(f"Image file does not exist: {source_path}")
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - Pillow is a hard dependency
+        raise ImageImportError("Pillow is required to import images.") from exc
+    try:
+        with Image.open(source_path) as image:
+            width, height = image.size
+    except Exception as exc:
+        raise ImageImportError(f"Không đọc được kích thước ảnh: {exc}") from exc
+    if width <= 0 or height <= 0:
+        raise ImageImportError(f"Ảnh {source_path.name} không có kích thước hợp lệ.")
+    if width <= max_width and height <= max_height:
+        return width, height
+    # Integer-only, and floored, so the result never spills over the cap by a
+    # rounding step. The max(1, ...) is for a picture so long and thin that its
+    # short side floors to nothing.
+    scale = min(max_width / width, max_height / height)
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
 def import_image_to_color_ids(
     path: str | Path,
     target_width: int,

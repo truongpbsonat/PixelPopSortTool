@@ -1077,8 +1077,20 @@ picture in one folder instead of the level in hand. The source folder holds one 
 are read the same way:
 
 - **A folder of art** (`*.png`, `*.jpg`, `*.jpeg`, `*.bmp`, `*.tga`, `*.gif`, `*.webp`). Each image is
-  sampled into a Pixel Grid exactly the way **Import Image** does, at the width, height and alpha
-  threshold set in the dialog, and becomes a brand-new level file.
+  sampled into a Pixel Grid exactly the way **Import Image** does, at the alpha threshold set in the
+  dialog, and becomes a brand-new level file.
+
+  **The grid size comes off each picture**, not off one number typed for the whole folder — *Lấy kích
+  thước từ chính ảnh*, on by default. A folder of art is a folder of *different* pictures, and one size
+  forced onto all of them is wrong for the commonest case: art that already **is** a grid. A 20×12 piece
+  pushed through a 16×16 grid loses four columns and two rows and comes back square. With the option on,
+  the two spin boxes become a **cap** instead of the size: a picture inside the cap keeps its own
+  dimensions exactly and nothing is resampled — the grid is the art, cell for cell — while a larger one
+  is scaled by the tighter of the two ratios, so a 400×100 banner under a 32×32 cap becomes 32×8 rather
+  than a squashed square. The cap is what stops a 4000×3000 photograph asking for a twelve-million-cell
+  grid. Untick it and every image is forced to the typed numbers, which is what a folder of photographs
+  wants. The size line under the preview always names what the run will actually use, and follows both
+  knobs as they move.
 - **A folder of level files** (`*.json`). The picture is read off the level already in the file, so a
   folder of hand-painted levels can be (re)generated in one pass. `genlv*.json` presets sitting in the
   same folder are never mistaken for levels.

@@ -52,7 +52,11 @@ from pixel_level_tool.services.autogen_batch import (
     write_report_csv,
 )
 from pixel_level_tool.services.box_autogen import AutoGenOptions
-from pixel_level_tool.services.image_importer import ImageImportError, import_image_to_color_ids
+from pixel_level_tool.services.image_importer import (
+    ImageImportError,
+    image_grid_size,
+    import_image_to_color_ids,
+)
 from pixel_level_tool.services.legacy_level_importer import LegacyLevelImportError
 from pixel_level_tool.services.level_serializer import LevelSerializationError
 from pixel_level_tool.ui.widgets.auto_gen_folder_form import AutoGenFolderForm
@@ -230,6 +234,14 @@ class AutoGenFolderWindow(QMainWindow):
             0, QHeaderView.ResizeMode.Stretch
         )
         self.source_table.itemSelectionChanged.connect(self._selection_changed)
+        # The three knobs that decide how an image is sampled. The preview caches
+        # per size, so it already told the truth *once selected* - it just never
+        # redrew when the size moved under it, which reads as the knob doing
+        # nothing. The size label under the preview is where a designer checks
+        # what "lấy kích thước từ chính ảnh" actually gave this picture.
+        self.form.size_from_image.toggled.connect(self._selection_changed)
+        self.form.pixel_width.valueChanged.connect(self._selection_changed)
+        self.form.pixel_height.valueChanged.connect(self._selection_changed)
         left_layout.addWidget(self.source_table, 1)
         self.only_selected = QCheckBox("Chỉ sinh các dòng đang chọn")
         self.only_selected.setToolTip(
@@ -341,6 +353,7 @@ class AutoGenFolderWindow(QMainWindow):
             source.kind,
             self.form.pixel_width.value(),
             self.form.pixel_height.value(),
+            self.form.size_from_image.isChecked(),
             self.form.alpha.value(),
         )
         if key in self._preview_cache:
@@ -350,6 +363,10 @@ class AutoGenFolderWindow(QMainWindow):
             if source.kind == "image":
                 width = self.form.pixel_width.value()
                 height = self.form.pixel_height.value()
+                # The same reading the run makes, so the preview is the picture
+                # that ships rather than one sampled at a size nobody asked for.
+                if self.form.size_from_image.isChecked():
+                    width, height = image_grid_size(source.path, width, height)
                 grid = PixelGridData(
                     width,
                     height,

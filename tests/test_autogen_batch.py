@@ -22,6 +22,7 @@ from pixel_level_tool.services.autogen_batch import (
 )
 from pixel_level_tool.services.autogen_config import load_autogen_config, save_autogen_config
 from pixel_level_tool.services.box_autogen import AutoGenOptions
+from pixel_level_tool.services.image_importer import ImageImportError, image_grid_size
 from pixel_level_tool.services.level_serializer import (
     LevelSerializationError,
     load_level,
@@ -255,6 +256,101 @@ def test_generate_folder_records_the_file_it_could_not_read(tmp_path):
     assert broken.status == STATUS_ERROR and "không đọc được" in broken.detail
     # One bad file does not stop the folder.
     assert (out / "1.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# The grid size each picture asks for
+# --------------------------------------------------------------------------- #
+# A folder of art is a folder of *different* pictures. Sampling all of them at
+# the one size typed into the form is right for photographs and wrong for pixel
+# art: the art already is a grid, and forcing a 20x12 piece through a 16x16 one
+# both loses rows and comes back square. So the two numbers can be read as a cap
+# instead, and each picture then asks for its own size.
+def _write_sized_picture(path, width: int, height: int) -> None:
+    image = Image.new("RGBA", (width, height), (255, 0, 0, 255))
+    for y in range(height // 2):
+        for x in range(width):
+            image.putpixel((x, y), (0, 0, 255, 255))
+    image.save(path)
+
+
+def test_a_picture_inside_the_cap_keeps_its_own_size(tmp_path):
+    """Nothing is resampled: the grid is the art, cell for cell."""
+    path = tmp_path / "art.png"
+    _write_sized_picture(path, 20, 12)
+    assert image_grid_size(path, 32, 32) == (20, 12)
+    # Exactly on the cap is inside it.
+    assert image_grid_size(path, 20, 12) == (20, 12)
+
+
+def test_a_picture_over_the_cap_is_fitted_without_being_squashed(tmp_path):
+    """The tighter of the two ratios wins, so the shape survives the fit."""
+    path = tmp_path / "wide.png"
+    _write_sized_picture(path, 400, 100)
+    # Width is the binding side: 400 -> 32 is a quarter of the height's headroom.
+    assert image_grid_size(path, 32, 32) == (32, 8)
+    path = tmp_path / "tall.png"
+    _write_sized_picture(path, 100, 400)
+    assert image_grid_size(path, 32, 32) == (8, 32)
+
+
+def test_a_picture_thinner_than_one_cell_still_gets_one(tmp_path):
+    path = tmp_path / "sliver.png"
+    _write_sized_picture(path, 4000, 2)
+    assert image_grid_size(path, 16, 16) == (16, 1)
+
+
+def test_a_cap_of_zero_is_rejected(tmp_path):
+    path = tmp_path / "art.png"
+    _write_sized_picture(path, 8, 8)
+    with pytest.raises(ImageImportError):
+        image_grid_size(path, 0, 16)
+
+
+def test_generate_folder_can_take_each_grid_size_from_its_own_picture(tmp_path):
+    folder = tmp_path / "src"
+    folder.mkdir()
+    _write_sized_picture(folder / "1.png", 18, 10)
+    _write_sized_picture(folder / "2.png", 12, 14)
+    out = tmp_path / "out"
+
+    summary = generate_folder(
+        collect_sources(folder),
+        out,
+        AutoGenOptions(difficulty=int(LevelDifficulty.Easy)),
+        image_width=32,
+        image_height=32,
+        image_size_from_source=True,
+    )
+
+    assert summary.written == 2
+    # Two pictures, two shapes - and neither is the cap.
+    first = load_level(out / "1.json").pixel_grid
+    second = load_level(out / "2.json").pixel_grid
+    assert (first.width, first.height) == (18, 10)
+    assert (second.width, second.height) == (12, 14)
+
+
+def test_the_typed_size_still_wins_when_the_option_is_off(tmp_path):
+    """The old behaviour is one tick away, and is what a folder of photos wants."""
+    folder = tmp_path / "src"
+    folder.mkdir()
+    _write_sized_picture(folder / "1.png", 18, 10)
+    _write_sized_picture(folder / "2.png", 12, 14)
+    out = tmp_path / "out"
+
+    generate_folder(
+        collect_sources(folder),
+        out,
+        AutoGenOptions(difficulty=int(LevelDifficulty.Easy)),
+        image_width=9,
+        image_height=9,
+        image_size_from_source=False,
+    )
+
+    for name in ("1.json", "2.json"):
+        grid = load_level(out / name).pixel_grid
+        assert (grid.width, grid.height) == (9, 9)
 
 
 # --------------------------------------------------------------------------- #

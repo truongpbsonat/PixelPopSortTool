@@ -79,10 +79,32 @@ def test_selecting_a_row_previews_that_picture(qtbot, tmp_path):
     assert (window.preview.grid.width, window.preview.grid.height) == (9, 9)
     assert "1.json" in window.preview_label.text() and "màu" in window.preview_label.text()
 
-    # An image is sampled at the size the form asks for, not at its own.
+    # The 18x18 picture is over the 9x9 cap, so it is fitted to it - and being
+    # square, it fits square.
     window.source_table.selectRow(1)
     assert (window.preview.grid.width, window.preview.grid.height) == (9, 9)
     assert "cat.png" in window.preview_label.text()
+
+
+def test_the_preview_follows_the_size_the_run_would_use(qtbot, tmp_path):
+    """The knob is only believable if the picture under it moves when it is turned."""
+    window, source, _ = _window(qtbot, tmp_path, levels=(1,), pictures=("cat.png",))
+    # A picture with a shape, so "kept" and "squashed" are different answers.
+    image = Image.new("RGBA", (20, 10), (255, 0, 0, 255))
+    image.save(source / "cat.png")
+    window.form.refresh_sources()
+    window.form.pixel_width.setValue(32)
+    window.form.pixel_height.setValue(32)
+
+    window.source_table.selectRow(1)
+    # Inside the cap, so the art's own size stands and nothing is resampled.
+    assert (window.preview.grid.width, window.preview.grid.height) == (20, 10)
+    assert "20x10" in window.preview_label.text()
+
+    # Turning it off redraws at the typed size, without needing a reselect.
+    window.form.size_from_image.setChecked(False)
+    assert (window.preview.grid.width, window.preview.grid.height) == (32, 32)
+    assert "32x32" in window.preview_label.text()
 
 
 def test_the_arrows_walk_the_source_list(qtbot, tmp_path):
