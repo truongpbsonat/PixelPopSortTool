@@ -163,10 +163,19 @@ down a tier - see :func:`relieve_obstacles`) and whether the layout is playable 
 (:attr:`ObstacleLayer.faults`, which disqualifies it). Faults are the ones no
 replay can catch: the gameplay model taps a queue by index and walks no route
 across the grid, so a wall that seals a box in and a tunnel whose mouth faces no
-box both replay as wins and are dead in the runtime. A lock that opens after the
-play order wants the box behind it is the third of them, and the worst: it wins
-in the model and deadlocks in the runtime with no way back. They are read off the
-finished layout instead, and a layer that has one never ships.
+box both replay as wins and are dead in the runtime. Two more are the same fault
+seen from the tunnel's side - two tunnels aiming at one release slot, and a lock
+or a key on the box standing in that slot - because the whole queue comes out
+through that single square and the replay never asks whether it is open. A lock
+that opens after the play order wants the box behind it is the last of them, and
+the worst: it wins in the model and deadlocks in the runtime with no way back.
+They are read off the finished layout instead, and a layer that has one never
+ships.
+
+A layer the two locks broke gets one more chance before the bare grid: the form
+ladder cannot help it - a gentler Frozen is still a Frozen in the same place - so
+the blamed locks come off and other mechanics are drawn to replace them. See
+:func:`swap_lock_kinds`.
 
 One case is outside both of those readings, and :data:`BURIAL_GROUPS` is the
 answer to it: the picture does not win on the belt the level ships with at all.
@@ -182,7 +191,7 @@ the warning hands the tier's own burial straight back.
 
 import random
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
 from pixel_level_tool.domain.enums import (
@@ -848,6 +857,10 @@ class ObstaclePlan:
     # The picture has more boxes than the lattice holds, so tunnels are not the
     # tier's choice here - the level does not exist without them.
     overflow: bool = False
+    # Locks that were taken off the level because they made it unplayable, and
+    # the mechanics drawn to take their place. See `swap_lock_kinds`.
+    swapped: tuple[str, ...] = ()
+    drawn: tuple[str, ...] = ()
 
     def has(self, kind: str) -> bool:
         return kind in self.kinds
@@ -1124,6 +1137,78 @@ def plan_obstacle_kinds(
     )
 
 
+def swap_lock_kinds(
+    *,
+    plan: ObstaclePlan,
+    profile: DifficultyProfile,
+    options: AutoGenOptions,
+    scan: PictureScan,
+    surface_boxes: int,
+    capacity: int,
+    box_count: int,
+    blame: Sequence[str],
+    rng: random.Random,
+) -> ObstaclePlan:
+    """Drop the locks that made the level unplayable and draw other mechanics instead.
+
+    The relief ladder answers "too hard" by building a gentler form of the same
+    mechanics, and for five of the seven that is the right answer: a shallower
+    tunnel, a nearer arrow, a smaller wall count. It is the wrong answer for the
+    two locks. A Frozen box and a LargeBlock do not get *milder* as the form steps
+    down, they get a smaller number written on them, and a level they make
+    unwinnable is unwinnable because of where they landed rather than how hard
+    they bit. Stepping the form down four times and then shipping a bare grid is
+    what that used to cost.
+
+    So a level the locks broke swaps them out. The blamed kinds come off the plan
+    and the same number of mechanics are drawn - at random, from whatever this
+    picture can still pay for and the designer has not switched off - to take
+    their place. The level keeps the mechanic *count* its tier rolled, which is
+    the thing the budget actually decided; only the mix changes.
+
+    A designer who typed a Frozen count still loses it here, and the plan says so
+    in ``skipped``. A number somebody typed outranks the tier's table, but it does
+    not outrank the level being playable.
+    """
+    dropped = tuple(kind for kind in plan.kinds if kind in blame and kind in LOCK_KINDS)
+    if not dropped:
+        return plan
+    kept = [kind for kind in plan.kinds if kind not in dropped]
+    # Only the non-lock mechanics are drawn from: swapping one lock for the other
+    # would be answering "the locks broke this level" with a lock.
+    pool = [
+        kind
+        for kind in profile.kinds
+        if kind not in kept
+        and kind not in LOCK_KINDS
+        and designer_choice(kind, options) is not False
+        and not afford_reason(
+            kind,
+            options=options,
+            profile=profile,
+            scan=scan,
+            surface_boxes=surface_boxes,
+            capacity=capacity,
+            box_count=box_count,
+        )
+    ]
+    rng.shuffle(pool)
+    # Never more mechanics than the tier's ceiling: the swap replaces what was
+    # lost, it does not buy the level a bigger syllabus than its budget rolled.
+    room = max(0, min(len(dropped), plan.budget[1] - len([k for k in kept if k not in LOCK_KINDS])))
+    drawn = tuple(pool[:room])
+    rank = {kind: index for index, kind in enumerate(profile.kinds + profile.lock_kinds)}
+    why = "obstacle này làm level không thể thắng, đã đổi sang loại khác"
+    return replace(
+        plan,
+        kinds=tuple(sorted(kept + list(drawn), key=lambda kind: rank.get(kind, 0))),
+        forced=tuple(kind for kind in plan.forced if kind not in dropped),
+        skipped=plan.skipped + tuple((kind, why) for kind in dropped),
+        swapped=dropped,
+        drawn=drawn,
+    )
+
+
 def resolve_tunnel_mode(options: AutoGenOptions, plan: ObstaclePlan) -> str:
     """Which tunnel mode this run used, with ``auto`` answered by the plan.
 
@@ -1274,6 +1359,10 @@ class ObstacleRelief:
     # Every form faulted, so the level shipped as the bare base grid.
     base: bool = False
     enabled: bool = True
+    # Which of LOCK_KINDS the faults blamed, across every form tried. A ladder
+    # that ran out with one of these set is a ladder that was stepping down the
+    # wrong knob, and the run answers it with `swap_lock_kinds` instead.
+    lock_blame: tuple[str, ...] = ()
 
     @property
     def eased(self) -> int:
@@ -1364,6 +1453,11 @@ class ObstacleLayer:
     # that has none - in the worst case to the base grid, which has none by
     # construction. See `relieve_obstacles`.
     faults: tuple[str, ...] = ()
+    # Which of LOCK_KINDS the faults are down to, empty when neither is. A level
+    # the two locks make unplayable is the one fault the run can answer by
+    # spending the budget elsewhere rather than by softening the form, because a
+    # gentler Frozen is still a Frozen in the way - see `swap_lock_kinds`.
+    lock_blame: tuple[str, ...] = ()
 
     @property
     def shippable(self) -> bool:
@@ -1491,6 +1585,18 @@ def build_obstacle_layer(
         board, solution.order, blocks, wanted_window, rules
     )
 
+    # Where each filled tunnel hands its queue out, and which box is standing in
+    # that doorway. Read here rather than at the end, because every planner below
+    # has to keep off those boxes: a counter or a key on the box in front of a
+    # mouth shuts the whole queue behind it, and no replay can see that. See
+    # `mouth_boxes`.
+    mouths = [
+        (slot, facing)
+        for slot, queue, facing in zip(tunnel_slots, queues, facings, strict=True)
+        if queue
+    ]
+    doorways = mouth_boxes(mouths, placements)
+
     hidden_count = plan_hidden_count(len(placements), options, profile) if plan.has("hidden") else 0
     hidden = choose_hidden(placements, hidden_count, rng)
 
@@ -1520,7 +1626,15 @@ def build_obstacle_layer(
 
     arrow_count = plan_arrow_count(len(placements), options, profile, scan, plan)
     arrows = plan_arrow_locks(
-        placements, play_position, hidden | linked_indices, arrow_count, rng, profile.arrow_reach
+        placements,
+        play_position,
+        # `doorways` for the same reason as the two locks below: an arrow on the
+        # box in front of a tunnel's mouth holds the queue shut until its key
+        # goes, and the replay pops that queue without ever asking.
+        hidden | linked_indices | set(doorways),
+        arrow_count,
+        rng,
+        profile.arrow_reach,
     )
 
     # The last word on "is there still a way to win": the level replayed exactly
@@ -1576,7 +1690,9 @@ def build_obstacle_layer(
         total_pixels,
         profile,
         options,
-        set(),
+        # A slab over a tunnel's release slot is a slab over the tunnel: nothing
+        # comes out of it until the counter lifts, whatever the play order says.
+        set(doorways),
         partners,
         room,
         rng,
@@ -1602,8 +1718,9 @@ def build_obstacle_layer(
         # A linked pair has to carry identical effects, so freezing one half would
         # mean freezing the other at a number its own ceiling may not allow. And a
         # box already under a slab has a counter; a second one over it has no
-        # defined moment of opening.
-        linked_indices | slab_covered,
+        # defined moment of opening. The doorways are out for the same reason a
+        # slab keeps off them: a frozen box in front of a mouth freezes the queue.
+        linked_indices | slab_covered | set(doorways),
         rng,
     )
     # A slab hides what is under it, but only until it lifts, and Hidden keeps a
@@ -1612,18 +1729,16 @@ def build_obstacle_layer(
     # re-spending it would push the level past the share its tier asked for, and
     # would land on the bulk colour, which is the one Hidden that hides nothing.
 
-    # Three ways a finished layout can be unplayable, and the replay only sees one
-    # of them. The other two are geometry the gameplay model does not carry: it
-    # taps a queue by index and walks no route across the grid, so a sealed mouth
-    # and a walled-in box both replay as wins. They are asked of the layout here
-    # instead, and a layout with any of the three is not shipped.
+    # Five ways a finished layout can be unplayable, and the replay only sees one
+    # of them. The other four are geometry and doors the gameplay model does not
+    # carry: it taps a queue by index and walks no route across the grid, so a
+    # sealed mouth, a walled-in box, two tunnels sharing one release slot and a
+    # tunnel held shut by a lock on its doorway all replay as wins. They are asked
+    # of the layout here instead, and a layout with any of them is not shipped.
     box_slots = {(placement.slot_x, placement.slot_y) for placement in placements}
-    mouths = [
-        (slot, facing)
-        for slot, queue, facing in zip(tunnel_slots, queues, facings, strict=True)
-        if queue
-    ]
     sealed = sealed_tunnel_mouths(mouths, box_slots)
+    shared = shared_tunnel_mouths(mouths, box_slots, cols, rows)
+    gated = gated_tunnel_mouths(mouths, placements, arrows, frozen, slabs)
     faults: list[str] = []
     if played_belt is None:
         faults.append(f"thứ tự obstacle bắt buộc thua trên băng {rules.belt_slots} bóng")
@@ -1634,17 +1749,51 @@ def build_obstacle_layer(
             "tunnel không có box thật để nhả queue: "
             + ", ".join(f"({x}, {y}) → {facing.name}" for (x, y), facing in sealed)
         )
+    if shared:
+        faults.append(
+            "nhiều tunnel cùng nhả queue vào một slot, box trong tunnel hết đường ra: "
+            + ", ".join(
+                f"slot ({x}, {y}) ← "
+                + " + ".join(f"({ux}, {uy})" for ux, uy in users)
+                for (x, y), users in shared
+            )
+        )
+    if gated:
+        faults.append(
+            "box trước miệng tunnel đang bị khoá nên queue không ra được: "
+            + ", ".join(
+                f"({x}, {y}) → {facing.name} vướng {why}" for (x, y), facing, why in gated
+            )
+        )
     # The fourth way, and the only one a lock can cause: a counter that has not
     # reached its number by the time the winning line needs the box behind it.
     # The replay cannot see this either - it taps by index and counts no pixels -
     # so a level with a late lock wins in the model and deadlocks in the runtime.
-    faults.extend(locks_hold(frozen, slabs, progress, options.lock_margin))
+    late = locks_hold(frozen, slabs, progress, options.lock_margin)
     # And the fifth, which `locks_hold` cannot see: a set of counters the
     # certified line clears but no other order can, because between them they
     # starve a colour the picture asks for before any of them opens.
-    faults.extend(locks_open(board.sequence, solution.order, frozen, slabs))
-    if len(frozen) >= len(placements) and placements:
+    starved = locks_open(board.sequence, solution.order, frozen, slabs)
+    every_box_frozen = bool(placements) and len(frozen) >= len(placements)
+    faults.extend(late)
+    faults.extend(starved)
+    if every_box_frozen:
         faults.append("mọi box mặt ngoài đều Frozen, không có box nào tap được lúc bắt đầu")
+
+    # Which of the two locks is to blame for the level being unplayable, when one
+    # of them is. Read structurally rather than off the fault text, because it is
+    # what decides whether the run gets to spend the budget on something else
+    # instead of shipping a bare grid - see `swap_lock_kinds`.
+    blame: list[str] = []
+    if every_box_frozen or starved:
+        blame.extend(kind for kind, laid in (("frozen", frozen), ("block", slabs)) if laid)
+    for message in late:
+        blame.append("frozen" if message.startswith("Frozen") else "block")
+    for _, _, why in gated:
+        if why.startswith("Frozen"):
+            blame.append("frozen")
+        elif why.startswith("LargeBlock"):
+            blame.append("block")
 
     return ObstacleLayer(
         form=form,
@@ -1679,6 +1828,7 @@ def build_obstacle_layer(
         slab_count=slab_count,
         lock_room=room,
         faults=tuple(faults),
+        lock_blame=tuple(kind for kind in LOCK_KINDS if kind in blame),
     )
 
 
@@ -1834,6 +1984,11 @@ def relieve_obstacles(
         ),
         base=layer is base,
         enabled=options.obstacle_relief,
+        lock_blame=tuple(
+            kind
+            for kind in LOCK_KINDS
+            if any(kind in attempt.lock_blame for attempt in tried)
+        ),
     )
     return layer, relief
 
@@ -2574,8 +2729,15 @@ class AutoGenResult:
 
     @property
     def obstacle_free(self) -> bool:
-        """Did the level ship as the bare base grid, every mechanic layer faulting?"""
-        return self.obstacle_relief.base
+        """Did the level ship with no mechanic on the grid at all?
+
+        Read off the plan rather than off ``obstacle_relief.base``, because there
+        are now two ways to get here and only one of them is a base ship: every
+        form faulting, and :func:`swap_lock_kinds` taking the locks off a level
+        they broke while the designer had switched every replacement off by hand.
+        Both leave the same grid, so both have to answer this the same way.
+        """
+        return not self.obstacle_plan.kinds
 
     @property
     def walkthrough_belt(self) -> int:
@@ -3227,10 +3389,43 @@ def _tunnel_order(
     return sorted(slots, key=lambda slot: (-slot[1], -abs(slot[0] - centre), slot[0]))
 
 
+def distinct_doors(
+    tunnels: Sequence[tuple[int, int]],
+    doors: Callable[[tuple[int, int]], list[tuple[int, int]]],
+) -> bool:
+    """Can every tunnel be handed a release slot no other tunnel needs?
+
+    A release slot holds one box at a time - the box in it clears, the tunnel
+    behind pushes the next one in, and that one has to clear before anything else
+    moves - so a slot two tunnels aim at is a door two queues are queueing for,
+    and nothing in the level file says who goes first. Counting *a* free
+    neighbour per tunnel is not enough to rule that out: two tunnels can each
+    have a free neighbour and it can be the same one.
+
+    So the question is a matching rather than a count, and this is the ordinary
+    augmenting-path answer to it. Tiny by construction - at most one tunnel per
+    slot and four doors each - so the plain recursive form is the right one.
+    """
+    taken: dict[tuple[int, int], int] = {}
+
+    def assign(index: int, seen: set[tuple[int, int]]) -> bool:
+        for door in doors(tunnels[index]):
+            if door in seen:
+                continue
+            seen.add(door)
+            # Free, or the tunnel already holding it has somewhere else to go.
+            if door not in taken or assign(taken[door], seen):
+                taken[door] = index
+                return True
+        return False
+
+    return all(assign(index, set()) for index in range(len(tunnels)))
+
+
 def tunnels_can_release(
     chosen: list[tuple[int, int]], cols: int, rows: int
 ) -> bool:
-    """Does every tunnel here still have a neighbour that could hold a box?
+    """Does every tunnel here get a neighbour of its own that could hold a box?
 
     A tunnel hands its queue out through one side, and that side has to be a real
     box: a wall never opens and an emptied tunnel stays on the grid as one, so a
@@ -3246,13 +3441,21 @@ def tunnels_can_release(
     refused the whole level. Skipping the candidate instead sends the search on
     to the next row but one, where the row between them is still boxes and every
     mouth opens.
+
+    "Of its own" is the part that used to be missing. Two rows of tunnels with a
+    row of boxes between them passed the old reading - every tunnel had a box
+    beside it - and then the two tunnels facing each other across that row both
+    aimed at the same box, so eight stored boxes had one door out. See
+    :func:`distinct_doors`.
     """
     taken = set(chosen)
-    return all(
-        any(
-            neighbour not in taken for neighbour in slot_neighbours(slot, cols, rows)
-        )
-        for slot in chosen
+    return distinct_doors(
+        chosen,
+        lambda slot: [
+            neighbour
+            for neighbour in slot_neighbours(slot, cols, rows)
+            if neighbour not in taken
+        ],
     )
 
 
@@ -3519,10 +3722,23 @@ def tunnel_directions(
     * **Always a real box.** A box is the one neighbour that clears, so facing
       one is the only way the mouth is guaranteed to open up as the level is
       played.
+    * **Never a slot another tunnel already aims at.** The release slot holds one
+      box at a time: the box in it clears, the tunnel behind pushes the next one
+      in, and that one has to clear before anything else moves. Two tunnels
+      aiming at the same slot are two queues trying to use one door, and which of
+      them gets it is the runtime's choice rather than the level's - so the
+      second queue can sit there for the whole level while the first drains. That
+      is the "tunnel walls the boxes in" fault: eight stored boxes and one slot
+      to hand them out through. See :func:`shared_tunnel_mouths`.
 
     Ranking is by those tiers, so a usable side always beats a sealed one, and
     within a tier by :data:`TUNNEL_FACING_ORDER` - front row first, then the
     sides, and only then away from the player.
+
+    Tunnels pick in order of how little choice they have, so the one boxed into a
+    corner claims its only door before a tunnel with three of them takes it. The
+    facings come back in the order the tunnels were given, whatever order they
+    picked in.
 
     A tunnel with no box on any side keeps the best side it has (an in-lattice
     neighbour over the outside) rather than raising: the layout has already been
@@ -3530,23 +3746,42 @@ def tunnel_directions(
     """
     boxes = set(box_slots)
     blocked = set(wall_slots) | set(tunnel_slots)
-    facings: list[Direction] = []
-    for slot_x, slot_y in tunnel_slots:
+
+    def sides(slot: tuple[int, int]) -> int:
+        """Box neighbours this tunnel could hand a queue to at all."""
+        return sum(
+            (slot[0] + dx, slot[1] + dy) in boxes for dx, dy in DIRECTION_STEPS.values()
+        )
+
+    claimed: set[tuple[int, int]] = set()
+    facings: dict[int, Direction] = {}
+    # Fewest doors first: a corner tunnel with one box beside it has to have that
+    # box, and a tunnel with three sides loses nothing by taking one of the other
+    # two. Picking in slot order instead handed the shared door to whoever came
+    # first and left the cornered tunnel with a sealed mouth.
+    for position, (slot_x, slot_y) in sorted(
+        enumerate(tunnel_slots), key=lambda item: (sides(item[1]), item[0])
+    ):
         ranked = []
         for rank, direction in enumerate(TUNNEL_FACING_ORDER):
             dx, dy = DIRECTION_STEPS[direction]
             front = (slot_x + dx, slot_y + dy)
             if not (0 <= front[0] < cols and 0 <= front[1] < rows):
-                tier = 3
+                tier = 4
             elif front in blocked:
+                tier = 3
+            elif front not in boxes:  # inside the lattice, but nothing to hand a box to
                 tier = 2
-            elif front in boxes:
-                tier = 0
-            else:  # inside the lattice, but nothing there to hand a box to
+            elif front in claimed:
                 tier = 1
+            else:
+                tier = 0
             ranked.append((tier, rank, direction))
-        facings.append(min(ranked)[2])
-    return facings
+        facing = min(ranked)[2]
+        dx, dy = DIRECTION_STEPS[facing]
+        claimed.add((slot_x + dx, slot_y + dy))
+        facings[position] = facing
+    return [facings[position] for position in range(len(tunnel_slots))]
 
 
 def sealed_tunnel_mouths(
@@ -3569,6 +3804,115 @@ def sealed_tunnel_mouths(
         if (slot[0] + DIRECTION_STEPS[facing][0], slot[1] + DIRECTION_STEPS[facing][1])
         not in box_slots
     ]
+
+
+def mouth_slot(slot: tuple[int, int], facing: Direction) -> tuple[int, int]:
+    """The slot one tunnel hands its queue out into."""
+    dx, dy = DIRECTION_STEPS[facing]
+    return (slot[0] + dx, slot[1] + dy)
+
+
+def mouth_boxes(
+    mouths: list[tuple[tuple[int, int], Direction]], placements: list[Placement]
+) -> dict[int, tuple[int, int]]:
+    """The surface box each filled tunnel hands its queue out through, by order index.
+
+    This is the box that has to leave before the tunnel behind it can move at
+    all, and then again before every box after that: the release slot holds one
+    box at a time, so the whole queue comes out through this one square. Which
+    makes it the worst box on the grid to put a counter or a key on - a lock here
+    is not a lock on one box, it is a lock on the tunnel.
+
+    The gameplay model cannot see any of that. :func:`resolve_pick_sequence` pops
+    a queue by index and never asks whether the door is open, so a level whose
+    tunnels are held shut by a lock replays as a win and deadlocks in the runtime.
+    So the planners are handed these indices and simply keep off them - see
+    :func:`build_obstacle_layer` - and :func:`gated_tunnel_mouths` checks the
+    finished layout in case one lands there anyway.
+    """
+    at = {(placement.slot_x, placement.slot_y): placement.order_index for placement in placements}
+    found: dict[int, tuple[int, int]] = {}
+    for slot, facing in mouths:
+        front = mouth_slot(slot, facing)
+        index = at.get(front)
+        if index is not None:
+            found[index] = front
+    return found
+
+
+def shared_tunnel_mouths(
+    mouths: list[tuple[tuple[int, int], Direction]],
+    box_slots: set[tuple[int, int]],
+    cols: int,
+    rows: int,
+) -> list[tuple[tuple[int, int], tuple[tuple[int, int], ...]]]:
+    """Release slots more than one filled tunnel aims at, on a grid that had room for better.
+
+    One slot holds one box, so two queues aiming at it are two queues waiting on
+    the same square to empty, and nothing in the level file says which of them
+    gets it. :func:`_tunnel_slots` keeps tunnels apart so this cannot come up and
+    :func:`tunnel_directions` then hands out one door each; this is the reading
+    that says the two of them missed one, and a layout with a missed one is not
+    shipped.
+
+    "Had room for better" is the whole of the second half. A picture that
+    overflows the lattice badly enough parks tunnels along two rows with a single
+    row of boxes between them, and on that grid there genuinely are more queues
+    than doors - refusing it would mean refusing the picture, not fixing it. So
+    the clash is only a fault when :func:`distinct_doors` can find an assignment
+    the layout did not take.
+    """
+    aiming: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for slot, facing in mouths:
+        aiming.setdefault(mouth_slot(slot, facing), []).append(slot)
+    clashing = [
+        (front, tuple(users)) for front, users in sorted(aiming.items()) if len(users) > 1
+    ]
+    if not clashing:
+        return []
+    could = distinct_doors(
+        [slot for slot, _ in mouths],
+        lambda slot: [
+            neighbour
+            for neighbour in slot_neighbours(slot, cols, rows)
+            if neighbour in box_slots
+        ],
+    )
+    return clashing if could else []
+
+
+def gated_tunnel_mouths(
+    mouths: list[tuple[tuple[int, int], Direction]],
+    placements: list[Placement],
+    arrows: dict[int, tuple[Direction, Placement]],
+    frozen: list[BoxLock],
+    slabs: list[Slab],
+) -> list[tuple[tuple[int, int], Direction, str]]:
+    """Filled tunnels whose release slot is a box the player cannot simply tap.
+
+    A Frozen box, a box under a LargeBlock and a box behind an ArrowLock all wait
+    on something before they can go, and while they wait the tunnel behind them
+    cannot hand out a single box. The replay never notices - it taps queues by
+    index - so this is asked of the finished layout instead.
+
+    Hidden is deliberately not in here: a hidden box does not say what colour it
+    is, but it taps like any other, so the door still opens.
+    """
+    at = {(placement.slot_x, placement.slot_y): placement.order_index for placement in placements}
+    shut: dict[int, str] = {}
+    for slab in slabs:
+        for index in slab.covered:
+            shut[index] = f"LargeBlock {slab.count}"
+    for lock in frozen:
+        shut[lock.order_index] = f"Frozen {lock.count}"
+    for index in arrows:
+        shut.setdefault(index, "ArrowLock")
+    gated: list[tuple[tuple[int, int], Direction, str]] = []
+    for slot, facing in mouths:
+        index = at.get(mouth_slot(slot, facing))
+        if index is not None and index in shut:
+            gated.append((slot, facing, shut[index]))
+    return gated
 
 
 def tunnel_blocks(box_count: int, per_tunnel: list[int]) -> list[list[int]]:
@@ -5399,6 +5743,44 @@ def auto_generate_boxes(level: PixelLevelData, options: AutoGenOptions) -> AutoG
         base=base,
         bury_easy=bury_easy,
     )
+    # Stage 12a. The ladder ran out and the locks are why: a Frozen box or a slab
+    # landed somewhere that leaves the level unwinnable, and stepping the form
+    # down only ever wrote a smaller number on the same lock in the same place.
+    # That is the one refusal worth answering by changing the *mix* rather than
+    # the form, so the locks come off and other mechanics are drawn in their
+    # place - a level with a wall and a pair beats a bare grid. See
+    # `swap_lock_kinds`.
+    if relief.base and relief.lock_blame:
+        swapped = swap_lock_kinds(
+            plan=plan,
+            profile=tier_profile,
+            options=options,
+            scan=scan,
+            surface_boxes=surface_estimate,
+            capacity=capacity,
+            box_count=box_count,
+            blame=relief.lock_blame,
+            rng=rng,
+        )
+        if swapped.kinds != plan.kinds:
+            retry, retry_relief = relieve_obstacles(
+                board=board,
+                solution=solution,
+                scan=scan,
+                options=options,
+                tier_profile=tier_profile,
+                plan=swapped,
+                difficulty=difficulty,
+                rules=rules,
+                seed=seed,
+                base=base,
+                bury_easy=bury_easy,
+            )
+            # Kept only if it actually bought a level back. A swap that faults
+            # too leaves the original reading in place, so the report still says
+            # what the tier asked for and why none of it made it onto the grid.
+            if not retry_relief.base:
+                plan, layer, relief = swapped, retry, retry_relief
     # Stage 12b. Two things have decided this level so far and neither of them
     # ever looked at the sum: the tier said which mechanics, relief said how hard
     # each one is set. So the sum is read off the finished layer and, when it
@@ -6324,6 +6706,20 @@ def format_report(result: AutoGenResult, options: AutoGenOptions) -> str:
             "; ".join(f"{OBSTACLE_KIND_LABELS[kind]} ({why})" for kind, why in plan.skipped)
             if plan.skipped
             else "không có, mức này dùng hết"
+        ),
+        *(
+            [
+                "  đã đổi khoá: "
+                + "/".join(OBSTACLE_KIND_LABELS[kind] for kind in plan.swapped)
+                + " làm level không thắng được ở mọi dạng, thay bằng "
+                + (
+                    "/".join(OBSTACLE_KIND_LABELS[kind] for kind in plan.drawn)
+                    if plan.drawn
+                    else "không có — các loại còn lại đã dùng hết hoặc tranh không đủ chỗ"
+                )
+            ]
+            if plan.swapped
+            else []
         ),
         f"  dạng obstacle: mức {relief.label}"
         + (

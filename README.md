@@ -311,16 +311,18 @@ trusted, on two separate questions:
 * **Did the conveyor pay for it?** A burial shallower than asked for or a pair count short of the
   request is the belt saying no, and the answer is a gentler *form* of the same mechanic — the whole
   layer rebuilt a tier down. See [Hard picture, gentler obstacles](#hard-picture-gentler-obstacles).
-* **Is the layout playable at all?** Three failures are invisible to any replay, because the gameplay
+* **Is the layout playable at all?** Five failures are invisible to any replay, because the gameplay
   model taps a queue by index, walks no route across the grid and counts no pixels: a **wall that seals
-  a box in**, a **lock that opens too late** (see [Progress locks](#progress-locks)), and a
-  **tunnel whose mouth faces no box** — a mouth pointing at a wall, at another tunnel or off the edge of
-  the lattice is sealed for the whole level, so the tunnel's boxes can never be had. Both are read off
-  the finished layout, and a layer with either is **never shipped** (the mouth case used to go out with
-  only a warning). Small grids are where it bites: three tunnels on a three-box grid have nothing to
-  point at. Such a layer is dropped, a gentler form is tried, and if every form is unplayable the
-  certified **base grid ships instead** — a level with no mechanics beats a broken one, and the report
-  says so.
+  a box in**, a **lock that opens too late** (see [Progress locks](#progress-locks)), and three ways a
+  tunnel's queue can be shut in — a **mouth facing no box** (a wall, another tunnel or the edge of the
+  lattice is sealed for the whole level), **two tunnels aiming at the same release slot**, and a
+  **locked box standing in the doorway**. All are read off the finished layout, and a layer with any of
+  them is **never shipped** (the mouth case used to go out with only a warning). Small grids are where
+  it bites: three tunnels on a three-box grid have nothing to point at. Such a layer is dropped, a
+  gentler form is tried, and if every form is unplayable the certified **base grid ships instead** — a
+  level with no mechanics beats a broken one, and the report says so. The one exception is a layer the
+  two **progress locks** broke: those are swapped out for other mechanics rather than given up on, see
+  [Swapping a lock that breaks the level](#swapping-a-lock-that-breaks-the-level).
 
 **The placement avoids the sealed mouth rather than discovering it.** `_tunnel_slots` used to check only
 that a tunnel does not seal a *box* away; it would fill the back row with tunnels and then put the next
@@ -328,8 +330,9 @@ one in the row in front — which is the one slot the tunnel behind it was point
 had nothing but tunnels on every side, and because the fault lands on the **base grid** there was
 nothing left to fall back to: **81 boxes on a 64-slot lattice refused the level outright**, telling the
 designer to raise the slot limit or shrink a picture that fitted perfectly well. `tunnels_can_release`
-now asks of every candidate whether each tunnel still has a neighbour that can hold a box, which makes
-the back rows fill in **alternating** order once one of them is solid — a full row of tunnels needs the
+now asks of every candidate whether each tunnel still has a neighbour **of its own** that can hold a box
+— a matching rather than a count, because two tunnels can each have a free neighbour and it can be the
+same one — which makes the back rows fill in **alternating** order once one of them is solid — a full row of tunnels needs the
 row in front of it to stay boxes, so the next tunnel goes one row further in. A picture of 576 boxes now
 lays out on the same 64-slot lattice, 29 on the surface and 547 in 35 tunnels, every mouth facing a box.
 It is a **preference, not a veto**: a lattice too cramped to give every tunnel a box seats them anyway
@@ -788,6 +791,21 @@ qualify, the mouth turns towards the **front row** first — the part of the gri
 way the hand-made levels point their edge tunnels inwards. The report lists each tunnel's slot and facing,
 and warns if a cramped or wall-heavy lattice left a mouth with no box on any side.
 
+**The release slot holds one box at a time.** The box in it clears, the tunnel behind pushes the next one
+in, and that one has to clear before anything else moves — so the whole queue comes out through that single
+square. Two consequences, and both used to go out in shipped levels:
+
+* **No two tunnels share a door.** A slot two tunnels aim at is two queues waiting on the same square, and
+  nothing in the level file says who goes first. Tunnels claim their facings in turn — the one with the
+  fewest box sides picking first, so a cornered tunnel keeps its only door — and a slot already claimed
+  ranks below a free one. A clash that survives that is a fault, but only when a distinct-door assignment
+  exists to be found: a picture that overflows the lattice badly enough parks tunnels along two rows with a
+  single row of boxes between them, and there genuinely are more queues than doors.
+* **Nothing is locked onto the doorway.** A `Frozen` box, a box under a `LargeBlock` and a box behind an
+  `ArrowLock` all wait on something before they can go, and while they wait the tunnel behind them cannot
+  hand out anything. So the three planners are handed the doorway boxes and keep off them. `Hidden` is not
+  in that list: a hidden box does not say its colour, but it taps like any other.
+
 ### Walls
 
 **Every lattice slot the boxes do not fill is a wall.** A wall blocks the way in to the boxes beside it and
@@ -984,7 +1002,35 @@ conveyor* rather than balls *cleared off the picture*: the two readings can diff
 
 Neither lock is ever combined with something that would make its count undefined — a slab never covers
 a frozen box, two slabs never overlap, and a `LinkedContainer` half is never frozen (the validator
-makes both halves of a pair carry identical effects, and the two halves have different ceilings).
+makes both halves of a pair carry identical effects, and the two halves have different ceilings). And
+neither is ever laid on the box standing in front of a **tunnel's release slot**: that box has to leave
+before the tunnel behind it can hand out a single one of its own, so a counter there is a counter on
+the whole queue — a failure the replay cannot see at all, since it pops queues by index and never asks
+whether the door is open. `ArrowLock` keeps off the same box for the same reason; `Hidden` does not
+have to, because a hidden box still taps like any other.
+
+#### Swapping a lock that breaks the level
+
+The relief ladder answers "too hard" by rebuilding the same mechanics a tier gentler, and for five of
+the seven that is the right answer: a shallower tunnel, a nearer arrow, a smaller wall count. It is the
+**wrong answer for the two locks**. A `Frozen` box and a `LargeBlock` do not get milder as the form
+steps down — they get a smaller number written on them — so a level they make unwinnable is unwinnable
+because of *where they landed*, not how hard they bit. Stepping the form down four times and then
+shipping a bare grid is what that used to cost.
+
+So a level the locks broke **swaps them out**. Every fault is attributed to a mechanic as it is raised,
+and when the ladder runs out with a lock to blame the run drops the blamed locks and draws the same
+number of mechanics at random from whatever the picture can still pay for and the designer has not
+switched off — never the other lock, which would be answering "the locks broke this level" with a lock.
+The level keeps the mechanic **count** its tier rolled; only the mix changes. A designer who typed a
+`Frozen` count loses it here too, and the report says why:
+
+```
+  đã đổi khoá: LargeBlock/Frozen làm level không thắng được ở mọi dạng, thay bằng Wall/LinkedContainer
+```
+
+The bare base grid is still the floor underneath it: a swap that finds nothing to draw, or one that
+faults in its turn, leaves the original reading in place and the certified grid goes out plain.
 
 The report states what is shut away, for how long, and the colour read the placement came from — the
 last line is the check by eye: a colour whose picture demand is not covered by the boxes still tappable

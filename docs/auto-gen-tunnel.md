@@ -255,3 +255,61 @@ Trong `tests/test_box_autogen.py`, mục `# Tunnels`:
 5. **Hướng mở rộng chưa làm**: đặt `Hidden` lên `storedCells` trong tunnel (hiện để `None`) — cộng
    dồn hai cơ chế che thông tin. Chưa làm vì yêu cầu ban đầu là "giấu bằng vị trí trong hàng đợi",
    không phải bằng effect.
+
+---
+
+## 10. Miệng tunnel — bổ sung 2026-09-08
+
+Mục 9.2 để mở câu hỏi *"nếu runtime nhả box ra đúng ô đó thì cần thêm rule ô đó phải trống"*.
+Câu trả lời là **có**, và nó gây ra hai bug thật trên level đã ship.
+
+### 10.1 Một slot nhả, một tunnel
+
+Slot trước miệng tunnel chứa **một box tại một thời điểm**: box trong đó bị ăn ⇒ tunnel phía sau
+đẩy box tiếp theo vào ⇒ box đó lại phải được ăn thì mới có box tiếp. Nên **cả hàng đợi đi qua đúng
+một ô vuông đó**.
+
+Hai tunnel cùng chỉ vào một slot = hai hàng đợi xếp hàng trước một cái cửa, và file level **không
+nói ai đi trước**. Level 25 sinh ra đúng thế: tunnel `(0, 0)→Up` và tunnel `(0, 2)→Down` đều nhả
+vào slot `(0, 1)`, 8 box chung một cửa; tương tự ở `(7, 1)`.
+
+Nguyên nhân: `tunnels_can_release` chỉ hỏi *"mỗi tunnel còn **một** hàng xóm không phải tunnel
+không?"* — hai tunnel đều trả lời có, và đó **cùng là một hàng xóm**.
+
+Sửa ở 3 chỗ:
+
+| Hàm | Thay đổi |
+| --- | --- |
+| `distinct_doors` *(mới)* | ghép cặp tunnel → cửa riêng (augmenting path). Nhỏ xíu: ≤ 4 cửa/tunnel |
+| `tunnels_can_release` | dùng `distinct_doors` thay cho `any(...)` ⇒ lúc **đặt slot** đã tránh |
+| `tunnel_directions` | chọn hướng **tuần tự**, slot đã có tunnel khác nhắm vào bị tụt tier; tunnel **ít cửa nhất chọn trước** (tunnel góc kẹt giữ lấy cửa duy nhất của nó) |
+
+`shared_tunnel_mouths` là fault cuối cùng — nhưng **chỉ khi lưới còn cách xếp khác**
+(`distinct_doors` tìm được ghép cặp). Ảnh tràn lưới nặng thì hai hàng tunnel kẹp một hàng box là
+tình huống *không có* cách nào tốt hơn, từ chối level ở đó không sửa được gì.
+
+### 10.2 Không khoá gì lên box trước miệng tunnel
+
+Box đứng trước miệng phải rời đi thì tunnel mới nhúc nhích. Đặt `Frozen` / `LargeBlock` /
+`ArrowLock` lên đúng box đó = khoá **cả hàng đợi**, và `resolve_pick_sequence` pop theo index nên
+**không nhìn thấy gì cả** — replay vẫn báo thắng, runtime thì kẹt.
+
+Đo trên `level_gen/`: **39/89 file** đang dính, gồm level 10 (`tunnel 301 → box 309 ArrowLock`) và
+level 83 (`mouth nằm dưới LargeBlock count=355`).
+
+Sửa: `build_obstacle_layer` tính `mouths` **sớm** (ngay sau `plan_queues`, thay vì ở cuối), lấy
+`doorways = mouth_boxes(...)` rồi truyền vào cả 3 planner làm danh sách cấm:
+
+- `plan_arrow_locks(..., hidden | linked_indices | set(doorways), ...)`
+- `plan_slabs(..., banned=set(doorways), ...)`
+- `plan_frozen(..., linked_indices | slab_covered | set(doorways), ...)`
+
+`gated_tunnel_mouths` kiểm lại layout đã xong, phòng khi vẫn lọt. **`Hidden` không nằm trong danh
+sách cấm**: box ẩn vẫn tap được bình thường, chỉ là không biết màu.
+
+### 10.3 Còn mở
+
+Box trước miệng tunnel phải được tap **trước** khi hàng đợi cần ra — hiện chưa mô hình hoá, chỉ
+đảm bảo nó không bị khoá. `tunnel_blocks` rải khối theo walkthrough và không bao giờ bắt đầu ở
+bước 0, nên thực tế box mặt ngoài luôn có đường tap trước, nhưng đó là *quan sát* chứ chưa phải
+*chứng minh*.

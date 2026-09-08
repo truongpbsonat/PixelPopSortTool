@@ -15,6 +15,8 @@ from pixel_level_tool.domain.enums import (
     ThemeId,
 )
 from pixel_level_tool.domain.level_models import (
+    ArrowLockCellEffectData,
+    FrozenCellEffectData,
     HiddenCellEffectData,
     LargeBlockObstacleData,
     PixelGridData,
@@ -24,6 +26,7 @@ from pixel_level_tool.domain.level_models import (
 from pixel_level_tool.services.box_autogen import (
     BALLS_PER_BOX,
     DIFFICULTY_PROFILES,
+    DIRECTION_STEPS,
     MAX_BOX_SLOTS,
     SLOT,
     AutoGenError,
@@ -44,6 +47,7 @@ from pixel_level_tool.services.box_autogen import (
     tunnels_for_overflow,
     plan_walls,
     reachable_slots,
+    shared_tunnel_mouths,
     tunnel_blocks,
     tunnel_directions,
 )
@@ -711,6 +715,87 @@ def test_generated_tunnels_release_into_a_real_box(difficulty):
         assert 0 <= front[0] < result.slot_cols and 0 <= front[1] < result.slot_rows
         assert front in box_slots
     assert not any("hướng nhả box hợp lệ" in warning for warning in result.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# One release slot, one tunnel
+# --------------------------------------------------------------------------- #
+# The release slot holds one box at a time: the box in it clears, the tunnel
+# behind pushes the next one in, and that one has to clear before anything else
+# moves. So a slot two tunnels aim at is a door two queues are queueing for, and
+# nothing in the level file says who goes first - which is the shipped bug this
+# covers, a level with eight stored boxes and one way out for them.
+def _fronts(tunnels, facings):
+    return [
+        (slot[0] + DIRECTION_STEPS[facing][0], slot[1] + DIRECTION_STEPS[facing][1])
+        for slot, facing in zip(tunnels, facings)
+    ]
+
+
+def test_two_tunnels_never_aim_at_the_same_release_slot():
+    """A box beside each tunnel is not enough - each needs a box of its own."""
+    # Both tunnels would rather have (1, 0): it is the earlier side for the first
+    # and the only in-lattice one left for the second. The old ranking gave it to
+    # both, because each asked "is there a box beside me" and stopped there.
+    tunnels = [(0, 0), (2, 0)]
+    facings = tunnel_directions(tunnels, [(1, 0), (0, 1), (2, 1)], [], 3, 3)
+    assert _fronts(tunnels, facings) == [(1, 0), (2, 1)]
+
+
+def test_a_tunnel_with_one_door_claims_it_before_a_tunnel_with_two():
+    """Picking in slot order handed the shared door to whoever came first."""
+    # (0, 0) is a corner with exactly one box beside it; (1, 1) has two, so it is
+    # the one that has to give way even though it is first in the list.
+    tunnels = [(1, 1), (0, 0)]
+    facings = tunnel_directions(tunnels, [(1, 0), (2, 1)], [], 3, 3)
+    assert _fronts(tunnels, facings) == [(2, 1), (1, 0)]
+
+
+def test_a_shared_release_slot_is_a_fault_only_when_the_grid_had_room_for_better():
+    # Both mouths on (1, 0), which is the clash. Whether that is a fault depends
+    # entirely on whether the grid could have given them one door each.
+    mouths = [((0, 0), Direction.Right), ((2, 0), Direction.Left)]
+    # A box on the far side of each tunnel too: an assignment exists, so aiming
+    # both mouths at the shared one is the layout's mistake and it is not shipped.
+    roomy = {(1, 0), (0, 1), (2, 1)}
+    assert shared_tunnel_mouths(mouths, roomy, 3, 3) == [((1, 0), ((0, 0), (2, 0)))]
+    # One box between the two tunnels and nothing else: there is no assignment to
+    # find, so the clash is the picture rather than the layout, and refusing the
+    # level over it fixes nothing.
+    assert shared_tunnel_mouths(mouths, {(1, 0)}, 3, 3) == []
+
+
+def test_a_locked_box_never_stands_in_front_of_a_tunnel_mouth():
+    """A counter or a key on the doorway is a counter on the whole queue."""
+    for difficulty in ALL_DIFFICULTIES:
+        result = auto_generate_boxes(
+            level_10(),
+            AutoGenOptions(
+                difficulty=difficulty,
+                tunnel_mode="mechanic",
+                frozen_boxes=3,
+                blocks=2,
+                arrow_boxes=4,
+            ),
+        )
+        assert result.tunnel_mouths
+        shut = {
+            (cell.grid_x // SLOT, cell.grid_y // SLOT)
+            for cell in result.level.grid_cells
+            if cell.has_effect(FrozenCellEffectData)
+            or cell.has_effect(ArrowLockCellEffectData)
+        }
+        for obstacle in result.level.obstacles:
+            if not isinstance(obstacle, LargeBlockObstacleData):
+                continue
+            shut.update(
+                (obstacle.grid_x // SLOT + dx, obstacle.grid_y // SLOT + dy)
+                for dy in range(obstacle.height // SLOT)
+                for dx in range(obstacle.width // SLOT)
+            )
+        for slot, facing in result.tunnel_mouths:
+            step = DIRECTION_STEPS[facing]
+            assert (slot[0] + step[0], slot[1] + step[1]) not in shut
 
 
 def test_digging_is_narrowed_until_the_belt_survives_it():

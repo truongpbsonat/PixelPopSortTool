@@ -380,15 +380,45 @@ def _fault_locks(monkeypatch, when):
 
 
 def test_a_lock_layer_that_starves_a_colour_is_never_shipped(monkeypatch):
-    """Every form condemned, so the bare certified grid ships instead of a dead file."""
+    """Every form condemned, so the locks come off and other mechanics take their place."""
     clean = generated(int(LevelDifficulty.Hard), **BOTH_LOCKS)
     assert clean.frozen and clean.slabs, "the fixture has to carry both locks"
 
     _fault_locks(monkeypatch, lambda frozen, slabs: True)
     result = generated(int(LevelDifficulty.Hard), **BOTH_LOCKS)
 
-    assert result.obstacle_relief.base, "every form faulted, so the base grid ships"
-    assert result.obstacle_free
+    # Not one lock survives - which is the whole point, the locks are what the
+    # faults blamed - but the level is not stripped back to a bare grid for it.
+    assert result.frozen == [] and result.slabs == []
+    assert frozen_cells(result.level) == [] and slab_obstacles(result.level) == []
+    assert set(result.obstacle_plan.swapped) == set(LOCK_KINDS)
+    assert not result.obstacle_relief.base, "the swapped plan shipped a real layer"
+    assert not result.obstacle_free, "the budget was spent on other mechanics instead"
+    # And it is still a level: winnable, valid, and the swap is on the record.
+    assert result.winnable and result.valid
+    assert_valid(result.level)
+    assert any(
+        why.startswith("obstacle này làm level không thể thắng")
+        for _, why in result.obstacle_plan.skipped
+    )
+
+
+def test_a_bare_grid_is_still_the_floor_when_nothing_can_replace_the_locks(monkeypatch):
+    """A swap with nothing to draw still ships the picture, just with no mechanic on it."""
+    _fault_locks(monkeypatch, lambda frozen, slabs: True)
+    # Every mechanic the swap could draw is switched off by hand, so all the swap
+    # can do is take the locks off and leave the grid bare.
+    result = generated(
+        int(LevelDifficulty.Hard),
+        **BOTH_LOCKS,
+        hidden_boxes=0,
+        walls=0,
+        allow_tunnels=False,
+        use_arrow_lock=False,
+        use_linked_container=False,
+    )
+
+    assert result.obstacle_free, "nothing left to build, so the grid goes out bare"
     assert result.frozen == [] and result.slabs == []
     assert frozen_cells(result.level) == [] and slab_obstacles(result.level) == []
     # The point of the fallback: a level with no mechanics beats a broken one.
